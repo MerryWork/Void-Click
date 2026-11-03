@@ -94,6 +94,24 @@ class ScreenBackend:
             box = (0, 0, 1, 1)  # area is off-screen: an empty search, not a crash
         return Shot(image.crop(box), sl + box[0] / scale, st + box[1] / scale, scale)
 
+    def grab_fast(self, region):
+        """Grab just `region`, as quickly as the platform allows.
+
+        Timing steps look at a small bar many times a second; grabbing the
+        whole desktop each time would be far too slow. Windows and X11 copy
+        just the area (in physical pixels, thanks to DPI awareness). macOS
+        returns bbox grabs at a different scale than full grabs, so there
+        the consistent full-grab-and-crop path is used instead.
+        """
+        if sys.platform == "darwin":
+            return self.grab(region)
+        from PIL import ImageGrab
+
+        x, y, w, h = (int(round(v)) for v in region)
+        kwargs = {"all_screens": True} if sys.platform == "win32" else {}
+        image = ImageGrab.grab(bbox=(x, y, x + w, y + h), **kwargs).convert("RGB")
+        return Shot(image, x, y, image.width / float(w) if w else 1.0)
+
     # ---------------------------------------------------------------- input
 
     def _ctl(self):
@@ -103,6 +121,15 @@ class ScreenBackend:
             self._mouse = mouse.Controller()
             self._keyboard = keyboard.Controller()
         return self._mouse, self._keyboard
+
+    def prepare(self):
+        """Connect the mouse and keyboard now, not on the first press.
+
+        Creating pynput's controllers opens a connection to the input system,
+        which can take tens of milliseconds - enough to make the first key
+        press of a timing step late.
+        """
+        self._ctl()
 
     def move(self, x, y):
         m, _ = self._ctl()

@@ -6,7 +6,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from . import config, draw, explain, icons, model, theme
+from . import config, draw, explain, icons, matcher, model, practice, theme
 from . import widgets as w
 from .overlay import CaptureOverlay, Highlight
 from .page_flow import FlowPage
@@ -17,6 +17,14 @@ from .screen import ScreenBackend, virtual_screen
 
 APP_NAME = "Void Vision"
 FILE_TYPES = [("Void Vision flow", "*.vflow"), ("All files", "*.*")]
+
+class TimingResult:
+    """Where the marker (and a coloured spot) were on the last Test."""
+    kind = "timing"
+
+    def __init__(self, marker, zone):
+        self.marker, self.zone = marker, zone
+
 
 class TestResult:
     """The last Test of a step or library image, kept so panels can show it."""
@@ -79,14 +87,16 @@ class MainWindow(tk.Tk):
         self.dirty = False
         self._busy = False   # a capture/test is in progress
         self.test_results = {}   # step id / "tpl:<id>" -> TestResult
+        self.bar_snapshots = {}  # timing step id -> PIL image of its bar area
+        self._practice = None
         self._load_initial()
 
         self._build()
         self.apply_settings()
         self.show("flow")
         self.protocol("WM_DELETE_WINDOW", self.close)
-        self.bind_all("<Control-s>", lambda e: self.save_flow())
-        self.bind_all("<Control-o>", lambda e: self.open_flow())
+        self.bind_all("<Control-s>", lambda e: self._owns_shortcut(e) and self.save_flow())
+        self.bind_all("<Control-o>", lambda e: self._owns_shortcut(e) and self.open_flow())
         self.bind_all("<Delete>", self._delete_key)
         for seq in ("<Up>", "<Down>", "<Control-Up>", "<Control-Down>", "<Home>", "<End>",
                     "<space>", "<Control-d>", "<t>"):
@@ -358,7 +368,66 @@ class MainWindow(tk.Tk):
             CaptureOverlay(self, shot, mode, finished)
         self.after(300, grab)
 
+    # ------------------------------------------------------------------ timing bars
+
+    def snapshot_bar(self, step):
+        """Grab the step's bar area so the editor can draw the real bar."""
+        region = step.get("region")
+        if not region:
+            return
+        try:
+            self.bar_snapshots[step.id] = self.backend.grab_fast(tuple(region)).image
+        except Exception:
+            self.bar_snapshots.pop(step.id, None)
+
+    def _test_timing(self, step):
+        region = step.get("region")
+        if not region:
+            self.toast("Set the Bar area first \u2014 drag around the bar", "warn")
+            return
+        image = self.backend.grab_fast(tuple(region)).image
+        self.bar_snapshots[step.id] = image
+        tol = int(step.get("tolerance") or 40)
+        marker = matcher.marker_position(image, step.get("marker_rgb"), tol)
+        zone = None
+        if step.get("zone_mode") == "color":
+            zone = matcher.zone_span(image, step.get("zone_rgb"), tol)
+        self.test_results[step.id] = TimingResult(marker, zone)
+        if marker is None:
+            self.toast("Marker not seen \u2014 pick its colour with the dropper", "warn")
+        elif step.get("zone_mode") == "color" and zone is None:
+            self.toast("Spot colour not seen \u2014 pick it with the dropper", "warn")
+        else:
+            self.toast(f"Marker seen at {marker:.0%} along the bar", "ok")
+        self.flow_page.on_test_result(step.id)
+
+    def open_practice(self, step=None):
+        """Open the redrawn practice bar; 'Use for my step' wires it up."""
+        if self._practice is not None and self._practice.winfo_exists():
+            self._practice.lift()
+            return
+
+        def use(bar):
+            if step is None:
+                return
+            step.params["region"] = bar.bar_area()
+            step.params["zone"] = [round(v, 4) for v in bar.zone_fraction()]
+            step.params["marker_rgb"] = list(practice.MARKER)
+            step.params["zone_rgb"] = list(practice.SPOT)
+            step.params["zone_mode"] = "color" if bar.moving.get() else "fixed"
+            self.test_results.pop(step.id, None)
+            self.snapshot_bar(step)
+            self.mark_dirty()
+            self.flow_page.update_row(step)
+            self.flow_page.inspector.show(step)
+            self.toast("Step set up for the practice bar \u2014 press Run, then click the bar",
+                       "ok")
+        self._practice = practice.PracticeBar(self, on_use=use if step is not None else None)
+
     def test_step(self, step):
+        if step.kind == "timing":
+            self._test_timing(step)
+            return
         if step.kind in model.IMAGE_KINDS and self.flow.template_for(step) is None:
             self.toast("Capture an image for this step first", "warn")
             return
@@ -413,14 +482,30 @@ class MainWindow(tk.Tk):
 
     # ------------------------------------------------------------------ misc
 
-    def _list_key(self, e):
+    def _owns_shortcut(self, e):
+        """Shortcuts belong to the main window only, and never during a run.
+
+        Bindings made with bind_all fire for every window of the app - the
+        practice bar and dialogs included - so a flow pressing Space into the
+        practice bar used to toggle its own step off mid-run.
+        """
+        if self.runner.running or self._busy:
+            return False
+        try:
+            if e.widget.winfo_toplevel() is not self:
+                return False
+        except (AttributeError, tk.TclError, KeyError):
+            return False
         # Typing in a field (or using a dropdown) keeps its normal keys.
-        if isinstance(e.widget, (tk.Entry, tk.Menu)) or self.current != "flow":
+        return not isinstance(e.widget, (tk.Entry, tk.Menu))
+
+    def _list_key(self, e):
+        if not self._owns_shortcut(e) or self.current != "flow":
             return None
         return self.flow_page.handle_key(e)
 
     def _delete_key(self, e):
-        if isinstance(e.widget, tk.Entry):
+        if not self._owns_shortcut(e):
             return
         if self.current == "flow":
             self.flow_page.delete_selected()

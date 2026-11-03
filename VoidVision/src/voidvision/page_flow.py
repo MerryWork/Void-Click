@@ -15,7 +15,7 @@ ROW_GAP = 6
 
 QUICK_ADD = [("click_image", "Find & click"), ("wait_image", "Wait for image"),
              ("if_image", "If visible"), ("click_color", "Find colour"), ("wait", "Wait")]
-MORE_ADD = ["click", "key", "type", "scroll"]
+MORE_ADD = ["timing", "click", "key", "type", "scroll"]
 
 STATUS_COLORS = {"active": theme.ORANGE, "ok": theme.GREEN, "fail": theme.RED,
                  "skip": theme.FG_FAINT}
@@ -396,7 +396,8 @@ class FlowPage(tk.Frame):
             self.toggle_enabled(steps[i])
         elif key.lower() == "d" and ctrl:
             self.duplicate_selected()
-        elif key.lower() == "t" and not ctrl and steps[i].kind in model.SEARCH_KINDS:
+        elif key.lower() == "t" and not ctrl and (steps[i].kind in model.SEARCH_KINDS
+                                                  or steps[i].kind in model.TIMING_KINDS):
             self.app.test_step(steps[i])
         else:
             return None
@@ -404,6 +405,91 @@ class FlowPage(tk.Frame):
 
     def set_log(self, text):
         self.log_label.configure(text=text)
+
+
+class BarDiagram(tk.Canvas):
+    """The bar drawn wide: your captured bar if there is one, else a redrawn
+    one, with the spot (green, drag to move) and the last-seen marker (red)."""
+
+    W, H = 300, 58
+
+    def __init__(self, master, app, step, on_change):
+        super().__init__(master, width=self.W, height=self.H, bg=theme.BG_CARD,
+                         highlightthickness=0, bd=0, cursor="sb_h_double_arrow")
+        self.app, self.step, self.on_change = app, step, on_change
+        self.zone = list(step.get("zone"))
+        self._img = None
+        self._drag_from = None
+        self.bind("<ButtonPress-1>", self._press)
+        self.bind("<B1-Motion>", self._move)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.redraw()
+
+    def _frac(self, x):
+        return min(max((x - 4) / (self.W - 8), 0.0), 1.0)
+
+    def _x(self, f):
+        return 4 + f * (self.W - 8)
+
+    def redraw(self):
+        self.delete("all")
+        draw.rrect(self, 0, 0, self.W, self.H, 6, theme.BG_FIELD, theme.BORDER_STRONG,
+                   theme.BG_CARD)
+        snap = self.app.bar_snapshots.get(self.step.id)
+        top, height = 6, self.H - 22
+        if snap is not None:
+            pic = snap.convert("RGB").resize((self.W - 8, height), Image.LANCZOS)
+            self._img = ImageTk.PhotoImage(pic)
+            self.create_image(4, top, image=self._img, anchor="nw")
+        else:
+            # A clean redrawn bar: white track with ticks, as a stand-in.
+            cy = top + height / 2
+            self.create_rectangle(self._x(0), cy - 2, self._x(1), cy + 2, fill="white", outline="")
+            for i in range(11):
+                tx = self._x(i / 10)
+                tall = 8 if i in (0, 5, 10) else 5
+                self.create_rectangle(tx - 1, cy - tall, tx + 1, cy + tall, fill="white",
+                                      outline="")
+        z0, z1 = self._x(self.zone[0]), self._x(self.zone[1])
+        self.create_rectangle(z0, top - 2, z1, top + height + 2, outline=theme.GREEN, width=2)
+        self.create_rectangle(z0, top - 2, z1, top + height + 2, fill=theme.GREEN, outline="",
+                              stipple="gray25")
+        result = self.app.test_results.get(self.step.id)
+        caption = f"Spot {self.zone[0]:.0%}\u2013{self.zone[1]:.0%}"
+        if result is not None and getattr(result, "kind", "") == "timing":
+            if result.zone is not None:
+                caption = f"Spot found at {result.zone[0]:.0%}\u2013{result.zone[1]:.0%}"
+            if result.marker is not None:
+                mx = self._x(result.marker)
+                self.create_line(mx, top - 4, mx, top + height + 4, fill=theme.RED, width=3)
+                caption += f"   \u00b7   marker seen at {result.marker:.0%}"
+            else:
+                caption += "   \u00b7   marker not seen"
+        self.create_text(6, self.H - 8, text=caption, anchor="w", fill=theme.FG_SOFT,
+                         font=theme.font(8, "bold"))
+
+    def _press(self, e):
+        self._drag_from = self._frac(e.x)
+        self.zone = [self._drag_from, min(self._drag_from + 0.01, 1.0)]
+        self.redraw()
+
+    def _move(self, e):
+        if self._drag_from is None:
+            return
+        f = self._frac(e.x)
+        self.zone = [min(self._drag_from, f), max(self._drag_from, f)]
+        self.redraw()
+
+    def _release(self, e):
+        if self._drag_from is None:
+            return
+        self._drag_from = None
+        lo, hi = self.zone
+        if hi - lo < 0.01:                     # a click: a small spot around it
+            lo, hi = max(lo - 0.02, 0.0), min(lo + 0.02, 1.0)
+        self.zone = [round(lo, 4), round(hi, 4)]
+        self.redraw()
+        self.on_change(self.zone)
 
 
 class Inspector(w.Card):
@@ -462,8 +548,12 @@ class Inspector(w.Card):
         scroller.pack(fill="both", expand=True)
         fields = scroller.interior
         for key, lbl, ftype, default, opts in KINDS[step.kind]["fields"]:
+            if step.kind == "timing":
+                # Show only what applies to how the spot is found.
+                if key == "zone_rgb" and step.get("zone_mode") != "color":
+                    continue
             self._field(fields, key, lbl, ftype, opts)
-            if ftype in ("template", "color"):
+            if ftype in ("template", "color") and step.kind != "timing":
                 self._result_panel(fields)
 
         for icon, tip, cmd in (("up", "Move up", lambda: self.page.move_selected(-1)),
@@ -476,9 +566,15 @@ class Inspector(w.Card):
                  parent_bg=theme.BG_CARD,
                  command=lambda: self.app.start_run(start_at=self.app.flow.steps.index(step))
                  ).pack(side="right")
-        if step.kind in model.SEARCH_KINDS:
+        if step.kind in model.SEARCH_KINDS or step.kind in model.TIMING_KINDS:
             w.Button(foot, text="Test", icon="eye", variant="secondary", parent_bg=theme.BG_CARD,
+                     tooltip="Look once and show where the marker and spot are"
+                     if step.kind == "timing" else "Look for it on screen now",
                      command=lambda: self.app.test_step(step)).pack(side="right", padx=(0, 6))
+        if step.kind in model.TIMING_KINDS:
+            w.Button(foot, icon="bolt", variant="ghost", parent_bg=theme.BG_CARD,
+                     tooltip="Open the practice bar to try this step on",
+                     command=lambda: self.app.open_practice(step)).pack(side="right")
 
     # ------------------------------------------------------------- fields
 
@@ -488,11 +584,13 @@ class Inspector(w.Card):
         w.label(row, text, muted=True, size=9, bg=theme.BG_CARD, width=13).pack(side="left")
         return row
 
-    def _commit(self, key, value):
+    def _commit(self, key, value, _reshow=("zone_mode",)):
         if key in ("template", "region", "color", "rgb", "tolerance"):
             self.app.test_results.pop(self.step.id, None)
         self.step.params[key] = value
         self.page.update_row(self.step)
+        if key in _reshow:
+            self.after(0, lambda st=self.step: self.show(st))
 
     def _field(self, parent, key, lbl, ftype, opts):
         step = self.step
@@ -536,7 +634,8 @@ class Inspector(w.Card):
                          on_change=lambda v, key=key: self._commit(key, v), width=170,
                          parent_bg=bg).pack(side="left")
             else:
-                labels = model.ACTION_LABELS if key == "action" else {}
+                labels = (model.ACTION_LABELS if key == "action" else
+                          model.ZONE_MODE_LABELS if key == "zone_mode" else {})
                 w.Segmented(row, [(o, labels.get(o, o.title())) for o in opts], var,
                             on_change=lambda v, key=key: self._commit(key, v),
                             parent_bg=bg, width=1).pack(side="left", fill="x", expand=True,
@@ -571,6 +670,8 @@ class Inspector(w.Card):
             self._region_field(row, key)
         elif ftype == "color":
             self._color_field(row, key)
+        elif ftype == "zone":
+            self._zone_field(row, parent)
 
     def _template_field(self, parent):
         step, flow = self.step, self.app.flow
@@ -659,13 +760,20 @@ class Inspector(w.Card):
     def _region_field(self, row, key):
         step, bg = self.step, theme.BG_CARD
         region = step.get(key)
-        text = "Whole screen" if not region else f"{region[2]}×{region[3]} at {region[0]},{region[1]}"
-        w.label(row, text, size=9, bg=bg).pack(side="left")
+        timing = step.kind == "timing"
+        if region:
+            text = f"{region[2]}×{region[3]} at {region[0]},{region[1]}"
+        else:
+            text = "Not set \u2014 drag around the bar" if timing else "Whole screen"
+        w.label(row, text, size=9, bg=bg, fg=theme.ORANGE if timing and not region else theme.FG
+                ).pack(side="left")
 
         def set_region():
             def done(r):
                 if r:
                     self._commit(key, list(r))
+                    if timing:
+                        self.app.snapshot_bar(step)
                     self.show(step)
             self.app.capture("region", done)
 
@@ -673,11 +781,22 @@ class Inspector(w.Card):
             self._commit(key, None)
             self.show(step)
 
-        if region:
+        if region and not timing:
             w.Button(row, icon="close", variant="ghost", parent_bg=bg, height=26, icon_size=14,
                      tooltip="Search the whole screen", command=clear).pack(side="right")
-        w.Button(row, icon="region", variant="ghost", parent_bg=bg, height=26, icon_size=14,
-                 tooltip="Limit to an area (faster)", command=set_region).pack(side="right")
+        w.Button(row, icon="region", variant="primary" if timing and not region else "ghost",
+                 parent_bg=bg, height=26, icon_size=14,
+                 tooltip="Drag around the bar" if timing else "Limit to an area (faster)",
+                 command=set_region).pack(side="right")
+
+    def _zone_field(self, row, parent):
+        step = self.step
+        hint = ("Drag across the bar to mark the spot." if step.get("zone_mode") == "fixed"
+                else "Found by its colour on every look; drag to set where it starts.")
+        w.label(row, hint, muted=True, size=9, bg=theme.BG_CARD, wraplength=180,
+                justify="left").pack(side="left")
+        BarDiagram(parent, self.app, step, on_change=lambda z: self._commit("zone", z)
+                   ).pack(anchor="w", pady=(2, 10))
 
     def _color_field(self, row, key):
         step, bg = self.step, theme.BG_CARD

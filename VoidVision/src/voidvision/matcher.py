@@ -424,3 +424,85 @@ def find_color(haystack, rgb, tolerance=12):
     m = Match(left, y0, right - left + 1, bottom - y0 + 1, 1.0)
     m.elapsed_ms = (time.perf_counter() - start) * 1000
     return m
+
+
+# ---------------------------------------------------------------- timing bars
+
+def color_runs(haystack, rgb, tolerance=40, min_pixels=2):
+    """Horizontal spans [(x0, x1, pixels)] where `rgb` appears, widest first.
+
+    Used on a bar's screen area: each column counts as a hit when at least
+    `min_pixels` of its pixels are the colour, and neighbouring hit columns
+    (allowing 1px gaps) form one run.
+    """
+    arr = as_rgb(haystack).astype(np.int16)
+    target = np.array(rgb[:3], dtype=np.int16)
+    mask = (np.abs(arr - target) <= tolerance).all(axis=2)
+    counts = mask.sum(axis=0)
+    cols = counts >= min_pixels
+    runs, start, gap = [], None, 0
+    for x, hit in enumerate(cols):
+        if hit:
+            if start is None:
+                start = x
+            gap, end = 0, x
+        elif start is not None:
+            gap += 1
+            if gap > 1:
+                runs.append((start, end, int(counts[start:end + 1].sum())))
+                start = None
+    if start is not None:
+        runs.append((start, end, int(counts[start:end + 1].sum())))
+    runs.sort(key=lambda r: -r[2])
+    return runs
+
+
+def marker_position(haystack, rgb, tolerance=40):
+    """Centre of the marker along the bar, as a fraction 0..1, or None."""
+    width = as_rgb(haystack).shape[1]
+    runs = color_runs(haystack, rgb, tolerance)
+    if not runs or width < 2:
+        return None
+    x0, x1, _ = runs[0]
+    return ((x0 + x1) / 2.0) / (width - 1)
+
+
+def _color_columns(arr, rgb, tolerance, min_pixels=2):
+    target = np.array(rgb[:3], dtype=np.int16)
+    mask = (np.abs(arr - target) <= tolerance).all(axis=2)
+    counts = mask.sum(axis=0)
+    return counts >= min_pixels, counts
+
+
+def zone_span(haystack, rgb, tolerance=40, bridge_rgb=None):
+    """The spot's extent along the bar, (start, end) fractions, or None.
+
+    `bridge_rgb` is the marker's colour: where the marker sits on the spot it
+    hides part of it, splitting the spot's colour in two. Marker columns that
+    touch the spot are treated as spot, so it is still seen whole.
+    """
+    arr = as_rgb(haystack).astype(np.int16)
+    width = arr.shape[1]
+    if width < 2:
+        return None
+    spot_cols, counts = _color_columns(arr, rgb, tolerance)
+    if not spot_cols.any():
+        return None
+    joined = spot_cols.copy()
+    if bridge_rgb is not None:
+        joined |= _color_columns(arr, bridge_rgb, tolerance)[0]
+    best, best_pixels, start = None, 0, None
+    for x in range(width + 1):
+        on = x < width and (joined[x] or (x + 1 < width and joined[x - 1] and joined[x + 1]
+                                          if 0 < x else False))
+        if on and start is None:
+            start = x
+        elif not on and start is not None:
+            pixels = int(counts[start:x][spot_cols[start:x]].sum())
+            if pixels > best_pixels:
+                inside = np.nonzero(spot_cols[start:x])[0]
+                best, best_pixels = (start + inside[0], start + inside[-1]), pixels
+            start = None
+    if best is None:
+        return None
+    return best[0] / (width - 1), best[1] / (width - 1)

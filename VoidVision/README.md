@@ -97,6 +97,43 @@ pixels are ignored. Edit cut-out / Undo bring every pixel back at any time -
 the original pixels are kept in the flow file.
 
 
+HIT THE SPOT: TIMING BARS
+
+For a timing meter - a marker sliding along a bar, press a key when it's on
+the spot - add More > Hit the spot:
+
+1. Bar area: click the area button and drag around the bar. This step only
+   ever looks at that area, so it can look many times a second.
+2. Marker colour: use the dropper on the marker (default red).
+3. The spot is:
+     Fixed place  drag across the drawing of the bar to mark the spot
+     A colour     the spot is drawn in its own colour (e.g. green) and may
+                  move each round; pick that colour and it's found on
+                  every look
+4. Then press: the key, e.g. space (or press Record and hit it).
+5. Test shows where it sees the marker right now, drawn on the bar.
+
+How it times the press: it measures the marker's speed from the last few
+pictures and, if the marker will reach the middle of the spot before it
+can look again, it schedules the press for that exact moment - so a narrow
+spot isn't skipped between looks. It works in both directions. "Press early
+(ms)" presses sooner to absorb a game's input lag; raise it if presses land
+just after the middle.
+
+Loop the flow with a short Wait after the step to keep hitting round after
+round.
+
+Practice bar: the lightning button on a Hit the spot step opens a redrawn
+practice bar - a white track with ticks, a sweeping red marker and a green
+spot. It scores every key press ("Hit - 3 ms from the centre"). "Use for my
+step" points the step at it, so you can press Run and watch the step play.
+Keep the practice bar focused so it hears the key.
+
+Tested with real key presses against the practice bar: 45 of 45 presses on
+the spot across slow, medium and fast speeds, fixed and moving spots,
+typically within a few milliseconds of the centre.
+
+
 STEPS
 
 Vision
@@ -108,6 +145,9 @@ Vision
                    carry on; otherwise skip the next N steps
   Find colour      Look for a pixel colour (+/- tolerance) and click it.
                    Pick the colour straight off the screen with the dropper
+
+  Hit the spot     Watch a timing bar and press a key when its marker
+                   reaches the spot (see HIT THE SPOT above)
 
 Input
   Click            Click where the cursor already is, N times
@@ -205,7 +245,9 @@ TESTS
 Or run every suite in the repository, Void Click included, from the root
 with `python run_tests.py` (see ../TESTING.md).
 
-Covers cut-outs (masks, shape matching through a moving marker, not
+Covers Hit the spot timing (marker and spot detection, press scheduling at
+any speed, narrow spots, both directions, repeated screen pictures, spots
+that move, lead time), cut-outs (masks, shape matching through a moving marker, not
 mistaking a plain patch for the shape), the plain-language image and test
 explanations, the matcher (exact, downscaled, brightness-shifted, colour-strict,
 flat, multi-match, colour search), the flow file round trip, every runner

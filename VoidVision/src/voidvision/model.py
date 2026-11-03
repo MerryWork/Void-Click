@@ -99,10 +99,27 @@ KINDS = {
         "group": "flow",
         "fields": [("seconds", "Seconds", "float", 1.0, None)],
     },
+    "timing": {
+        "label": "Hit the spot",
+        "group": "vision",
+        "fields": [("region", "Bar area", "region", None, None),
+                   ("marker_rgb", "Marker colour", "color", [230, 30, 30], None),
+                   ("zone_mode", "The spot is", "choice", "fixed", ["fixed", "color"]),
+                   ("zone", "Spot", "zone", [0.45, 0.55], None),
+                   ("zone_rgb", "Spot colour", "color", [60, 220, 120], None),
+                   ("tolerance", "Colour range", "int", 40, None),
+                   ("combo", "Then press", "key", "space", None),
+                   ("lead_ms", "Press early (ms)", "int", 25, None),
+                   ("timeout", "Timeout (s)", "float", 10.0, None),
+                   ("on_fail", "If it never lines up", "choice", "stop", ON_FAIL)],
+    },
 }
+
+ZONE_MODE_LABELS = {"fixed": "Fixed place", "color": "A colour"}
 
 IMAGE_KINDS = {"click_image", "wait_image", "if_image"}
 SEARCH_KINDS = IMAGE_KINDS | {"click_color"}
+TIMING_KINDS = {"timing"}
 
 
 def new_id():
@@ -238,6 +255,8 @@ class Flow:
                 continue
             if step.kind in IMAGE_KINDS and self.template_for(step) is None:
                 out.append(f"Step {i} ({KINDS[step.kind]['label']}) has no image")
+            if step.kind == "timing" and not step.get("region"):
+                out.append(f"Step {i} (Hit the spot) needs its Bar area set")
         return out
 
     # -------------------------------------------------------------- io
@@ -321,6 +340,15 @@ def summary(step, flow):
         return f"Scroll {'up' if a > 0 else 'down'} {abs(a)}"
     if k == "wait":
         return f"Pause {p('seconds'):g}s"
+    if k == "timing":
+        if p("zone_mode") == "color":
+            r, g, b = p("zone_rgb")
+            spot = f"the #{r:02x}{g:02x}{b:02x} spot"
+        else:
+            z0, z1 = p("zone")
+            spot = f"{z0:.0%}\u2013{z1:.0%}"
+        where = "" if p("region") else " \u00b7 set the bar area"
+        return f"Press {format_combo(p('combo'))} when the marker hits {spot}{where}"
     return k
 
 

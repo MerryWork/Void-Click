@@ -664,6 +664,223 @@ class CutoutTests(unittest.TestCase):
         self.assertEqual(explain.image_quality(tiny).level, explain.WEAK)
 
 
+class SimulatedBar:
+    """A timing bar on a simulated clock: the marker sweeps at `speed` bar
+    widths per second; each look costs `frame` seconds. Records when the key
+    was pressed and where the marker really was at that moment."""
+
+    W, H = 200, 30
+
+    def __init__(self, speed=0.8, frame=0.03, start=0.0, spot=(0.6, 0.66), spot_rgb=None,
+                 bounce=True, refresh=0.0):
+        self.speed, self.frame, self.pos, self.dir = speed, frame, start, 1
+        # refresh > 0: the screen only redraws that often (like a 60 Hz game
+        # looked at faster than it draws), so some looks see the same picture.
+        self.refresh, self.shown, self.next_draw = refresh, start, 0.0
+        self.spot, self.spot_rgb, self.bounce = spot, spot_rgb, bounce
+        self.t = 0.0
+        self.presses = []          # (time, true marker position)
+        self.events = []
+
+    # backend protocol ------------------------------------------------
+    def clock(self):
+        return self.t
+
+    def sleep(self, s):
+        self._advance(s)
+
+    def _advance(self, dt):
+        self.t += dt
+        self.pos += self.dir * self.speed * dt
+        if self.bounce and self.pos > 1:
+            self.pos, self.dir = 2 - self.pos, -1
+        elif self.bounce and self.pos < 0:
+            self.pos, self.dir = -self.pos, 1
+
+    def grab_fast(self, region):
+        img = Image.new("RGB", (self.W, self.H), (209, 216, 229))
+        d = ImageDraw.Draw(img)
+        if self.spot_rgb:
+            x0, x1 = (int(v * (self.W - 1)) for v in self.spot)
+            d.rectangle([x0, 4, x1, 26], fill=self.spot_rgb)
+        d.rectangle([0, 13, self.W, 16], fill=(255, 255, 255))
+        if self.refresh <= 0 or self.t >= self.next_draw:
+            self.shown = self.pos
+            self.next_draw = self.t + self.refresh
+        mx = int(round(self.shown * (self.W - 1)))
+        d.rectangle([mx - 2, 2, mx + 2, 28], fill=(230, 30, 30))
+        self._advance(self.frame)          # looking takes time
+        return Shot(img, 0, 0, 1.0)
+
+    grab = grab_fast
+
+    def press_combo(self, combo, hold_ms=0):
+        self.presses.append((self.t, self.pos))
+        self.events.append(("key", combo))
+
+
+def timing_step(**kw):
+    params = dict(region=[0, 0, 200, 30], zone=[0.6, 0.66], lead_ms=0, timeout=5.0,
+                  combo="space")
+    params.update(kw)
+    return Step.create("timing", **params)
+
+
+class TimingTests(unittest.TestCase):
+    def test_marker_and_spot_detection(self):
+        bar = SimulatedBar(start=0.25, spot_rgb=(60, 220, 120))
+        img = bar.grab_fast(None).image
+        self.assertAlmostEqual(matcher.marker_position(img, (230, 30, 30)), 0.25, delta=0.02)
+        lo, hi = matcher.zone_span(img, (60, 220, 120))
+        self.assertAlmostEqual(lo, 0.6, delta=0.02)
+        self.assertAlmostEqual(hi, 0.66, delta=0.02)
+        blank = Image.new("RGB", (200, 30), (0, 0, 0))
+        self.assertIsNone(matcher.marker_position(blank, (230, 30, 30)))
+
+    def test_decision_rules(self):
+        from voidvision.runner import timing_decision
+        zone = (0.6, 0.7)
+        self.assertEqual(timing_decision(None, 0.4, zone, 0, 0.03), ("wait", 0.0))
+        # Unknown or untrusted speed: look again rather than guess.
+        self.assertEqual(timing_decision(0.65, None, zone, 0, 0.03), ("wait", 0.0))
+        self.assertEqual(timing_decision(0.65, 0.4, zone, 0, 0.03, False), ("wait", 0.0))
+        # Standing still on the spot: press.
+        self.assertEqual(timing_decision(0.65, 0.0, zone, 0, 0.03), ("press", 0.0))
+        # Far away and moving towards it: wait.
+        self.assertEqual(timing_decision(0.2, 0.4, zone, 0, 0.03)[0], "wait")
+        # At 0.4 widths/s it reaches the centre (0.65) in 0.1 s. With pictures
+        # 0.2 s apart that's before the next one, so press in 0.1 s...
+        action, delay = timing_decision(0.61, 0.4, zone, 0, 0.2)
+        self.assertEqual(action, "press")
+        self.assertAlmostEqual(delay, 0.1, delta=1e-9)
+        # ...but with fast pictures (30 ms) wait for a later, closer one.
+        self.assertEqual(timing_decision(0.61, 0.4, zone, 0, 0.03)[0], "wait")
+        # Moving away from a spot it already left: never press.
+        self.assertEqual(timing_decision(0.8, -0.4, zone, 0, 0.03)[0], "wait")
+        # Inside but past the centre: press now rather than miss.
+        self.assertEqual(timing_decision(0.68, 0.4, zone, 0, 0.03), ("press", 0.0))
+        # Lead time presses that much earlier.
+        _, no_lead = timing_decision(0.55, 0.4, zone, 0.0, 0.5)
+        _, lead = timing_decision(0.55, 0.4, zone, 0.05, 0.5)
+        self.assertAlmostEqual(no_lead - lead, 0.05, delta=1e-9)
+
+    def test_fit_motion(self):
+        from voidvision.runner import fit_motion
+        self.assertEqual(fit_motion([]), (None, None, False))
+        self.assertFalse(fit_motion([(0.1, 0.0), (0.2, 0.1)])[2])        # too few
+        x, v, ok = fit_motion([(0.10, 0.0), (0.12, 0.05), (0.14, 0.10)])
+        self.assertTrue(ok)
+        self.assertAlmostEqual(v, 0.4, delta=1e-9)
+        self.assertAlmostEqual(x, 0.14, delta=1e-9)
+        # Pixel-quantised slow motion: noisy steps, but one direction - trusted.
+        x, v, ok = fit_motion([(0.100, 0.00), (0.102, 0.005), (0.104, 0.02), (0.106, 0.025)])
+        self.assertTrue(ok)
+        self.assertGreater(v, 0)
+        # A wobble back and forth is not trusted.
+        self.assertFalse(fit_motion([(0.1, 0.0), (0.12, 0.05), (0.11, 0.1)])[2])
+
+    def _run(self, bar, step):
+        flow = Flow()
+        flow.steps = [step]
+        r = Runner(bar, poll=0.01)
+        msg = run_sync(r, flow, timeout=20)
+        return msg, bar.presses
+
+    def test_presses_while_marker_is_on_the_spot(self):
+        for speed in (0.3, 0.8, 1.5):
+            bar = SimulatedBar(speed=speed, frame=0.03, start=0.05)
+            msg, presses = self._run(bar, timing_step())
+            self.assertEqual(msg, "Finished", speed)
+            self.assertEqual(len(presses), 1)
+            self.assertTrue(0.6 <= presses[0][1] <= 0.66, (speed, presses))
+
+    def test_narrow_spot_is_not_skipped_between_looks(self):
+        # At 1.5 widths/s with 30 ms looks the marker moves 4.5% per look,
+        # wider than this 3% spot - only timed presses can land it.
+        bar = SimulatedBar(speed=1.5, frame=0.03, start=0.05)
+        msg, presses = self._run(bar, timing_step(zone=[0.62, 0.65]))
+        self.assertEqual(msg, "Finished")
+        self.assertTrue(0.62 <= presses[0][1] <= 0.65, presses)
+
+    def test_repeated_pictures_are_not_mistaken_for_a_stopped_marker(self):
+        # Looks every 5 ms, screen redraws every 16 ms: most looks repeat the
+        # last picture. Presses must still land near the centre, not at the
+        # edge where the marker enters.
+        for start, direction in ((0.05, 1), (0.95, -1)):
+            bar = SimulatedBar(speed=0.6, frame=0.005, start=start, refresh=0.016,
+                               spot=(0.55, 0.75))
+            bar.dir = direction
+            _, presses = self._run(bar, timing_step(zone=[0.55, 0.75]))
+            self.assertAlmostEqual(presses[0][1], 0.65, delta=0.03, msg=(direction, presses))
+
+    def test_slow_marker_with_pixel_steps_still_hits_the_centre(self):
+        # Slow enough that each redraw moves the marker about one pixel.
+        for start, direction in ((0.05, 1), (0.95, -1)):
+            bar = SimulatedBar(speed=0.15, frame=0.004, start=start, refresh=0.016,
+                               spot=(0.55, 0.75))
+            bar.dir = direction
+            _, presses = self._run(bar, timing_step(zone=[0.55, 0.75]))
+            self.assertAlmostEqual(presses[0][1], 0.65, delta=0.03, msg=(direction, presses))
+
+    def test_works_coming_back_the_other_way(self):
+        bar = SimulatedBar(speed=0.8, start=0.95)
+        bar.dir = -1
+        msg, presses = self._run(bar, timing_step(zone=[0.3, 0.36]))
+        self.assertTrue(0.3 <= presses[0][1] <= 0.36, presses)
+
+    def test_lead_presses_early(self):
+        bar = SimulatedBar(speed=0.5, frame=0.02, start=0.1)
+        _, presses = self._run(bar, timing_step(zone=[0.6, 0.7], lead_ms=100))
+        # 100 ms early at 0.5 widths/s = 5% before the centre (0.65).
+        self.assertAlmostEqual(presses[0][1], 0.60, delta=0.02)
+
+    def test_spot_found_by_colour(self):
+        bar = SimulatedBar(speed=0.8, start=0.05, spot=(0.3, 0.38), spot_rgb=(60, 220, 120))
+        step = timing_step(zone_mode="color", zone=[0.8, 0.9], zone_rgb=[60, 220, 120])
+        _, presses = self._run(bar, step)
+        self.assertTrue(0.3 <= presses[0][1] <= 0.38, presses)   # the coloured spot, not 80-90%
+
+    def test_marker_on_the_spot_does_not_split_it(self):
+        bar = SimulatedBar(start=0.64, spot=(0.6, 0.7), spot_rgb=(60, 220, 120))
+        img = bar.grab_fast(None).image
+        lo, hi = matcher.zone_span(img, (60, 220, 120), bridge_rgb=(230, 30, 30))
+        self.assertAlmostEqual(lo, 0.6, delta=0.01)
+        self.assertAlmostEqual(hi, 0.7, delta=0.01)
+
+    def test_spot_that_moves_every_round(self):
+        import random
+        rng = random.Random(7)
+
+        class Moving(SimulatedBar):
+            def press_combo(self, combo, hold_ms=0):
+                lo, hi = self.spot
+                self.presses.append((self.t, self.pos, lo <= self.pos <= hi))
+                start = rng.uniform(0.1, 0.8)
+                self.spot = (start, start + 0.08)
+
+        bar = Moving(speed=0.7, frame=0.005, start=0.05, spot=(0.62, 0.70),
+                     spot_rgb=(60, 220, 120), refresh=0.016)
+        flow = Flow()
+        flow.steps = [timing_step(zone_mode="color", zone_rgb=[60, 220, 120], timeout=8),
+                      Step.create("wait", seconds=0.25)]
+        flow.loop, flow.loop_count = True, 6
+        self.assertEqual(run_sync(Runner(bar, poll=0.01), flow, timeout=60), "Finished")
+        self.assertEqual(len(bar.presses), 6)
+        self.assertTrue(all(hit for _, _, hit in bar.presses), bar.presses)
+
+    def test_times_out_when_marker_never_arrives(self):
+        bar = SimulatedBar(speed=0.0, start=0.1)
+        msg, presses = self._run(bar, timing_step(timeout=0.5))
+        self.assertIn("failed", msg)
+        self.assertEqual(presses, [])
+
+    def test_needs_a_bar_area(self):
+        flow = Flow()
+        flow.steps = [Step.create("timing")]
+        self.assertIn("Bar area", flow.problems()[0])
+        self.assertIn("Press Space", model.summary(flow.steps[0], flow))
+
+
 class ScreenBackendTests(unittest.TestCase):
     def test_region_crop_keeps_retina_scale(self):
         from unittest import mock

@@ -79,6 +79,68 @@ def look_once(backend, flow, step):
     return p.hit, p.score
 
 
+STILL_AFTER = 0.25   # seconds of identical pictures before a marker counts as stopped
+
+
+def timing_decision(x, v, zone, lead, horizon, confirmed=True):
+    """When to press for a marker at `x` (0..1 along the bar).
+
+    v          speed in bar-widths per second (None = not known yet)
+    zone       (start, end) of the spot
+    lead       seconds to press early (input lag)
+    horizon    seconds until the next chance to decide (a picture's age plus
+               the time to the next new picture)
+    confirmed  whether the speed is trustworthy yet
+
+    Returns ("press", delay_seconds) or ("wait", 0).
+    """
+    if x is None:
+        return "wait", 0.0
+    lo, hi = zone
+    inside = lo <= x <= hi
+    centre = (lo + hi) / 2.0
+    if v is None or not confirmed:
+        return "wait", 0.0                      # don't guess - look again
+    if abs(v) < 1e-4:
+        # Standing still: press only once it's sitting on the spot.
+        return ("press", 0.0) if inside else ("wait", 0.0)
+    to_centre = (centre - x) / v               # seconds until it reaches the centre
+    if to_centre < 0:
+        # Already past the centre, moving away. Still inside? Press now -
+        # late but on the spot beats a miss.
+        return ("press", 0.0) if inside else ("wait", 0.0)
+    when = to_centre - lead
+    if when <= horizon:
+        # It gets there before the next chance to look again: time the press
+        # here rather than risk skipping a narrow spot.
+        return "press", max(when, 0.0)
+    return "wait", 0.0
+
+
+def fit_motion(samples):
+    """Position and speed from recent (x, t) pictures, by least squares.
+
+    Returns (x_now, speed, confirmed). Confirmed needs at least three
+    pictures all moving the same way - one noisy pixel step can't fool it.
+    """
+    if not samples:
+        return None, None, False
+    x_last, t_last = samples[-1]
+    if len(samples) < 3:
+        return x_last, None, False
+    ts = [t for _, t in samples]
+    xs = [x for x, _ in samples]
+    mt, mx = sum(ts) / len(ts), sum(xs) / len(xs)
+    var = sum((t - mt) ** 2 for t in ts)
+    if var <= 0:
+        return x_last, None, False
+    v = sum((t - mt) * (x - mx) for x, t in samples) / var
+    steps = [b - a for a, b in zip(xs, xs[1:])]
+    same_way = all(d > 0 for d in steps) or all(d < 0 for d in steps)
+    x_now = mx + v * (t_last - mt)              # smoothed position at the last picture
+    return x_now, v, same_way
+
+
 class Runner:
     def __init__(self, backend, on_state=None, on_step=None, on_log=None, poll=0.12):
         self.backend = backend
@@ -125,6 +187,9 @@ class Runner:
         return not self._stop.wait(seconds)
 
     def _run(self, flow, loop, loop_count, start_at):
+        prepare = getattr(self.backend, "prepare", None)
+        if prepare is not None:
+            _safe(prepare)          # connect input up front (see ScreenBackend.prepare)
         _safe(self.on_state, True, "Running")
         message = "Finished"
         try:
@@ -207,6 +272,86 @@ class Runner:
             if not self._sleep(self.poll):
                 return None, best
 
+    def _run_timing(self, step, index):
+        """Watch a bar; press the key when the marker reaches the spot.
+
+        Each look measures the marker's position (0..1 along the bar) and,
+        from the previous look, its speed. If the marker will reach the
+        spot's centre before the next look would arrive, the press is timed
+        for that moment - so a narrow spot isn't skipped between frames - and
+        `lead_ms` presses that much earlier to absorb game input lag.
+        """
+        region = tuple(step.get("region"))
+        grab = getattr(self.backend, "grab_fast", self.backend.grab)
+        clock = getattr(self.backend, "clock", time.monotonic)
+        sleep = getattr(self.backend, "sleep", None)
+        rgb, tol = step.get("marker_rgb"), int(step.get("tolerance") or 40)
+        lead = max(0, int(step.get("lead_ms") or 0)) / 1000.0
+        deadline = clock() + max(0.0, float(step.get("timeout") or 0))
+        zone = tuple(step.get("zone"))
+        # The first grab of a run can be slow (connecting to the display,
+        # warming up); take it once and throw it away so it can't skew the
+        # first speed reading.
+        grab(region)
+        samples = []           # recent new pictures: (position, time)
+        frame = 0.03           # typical time between new pictures, refined as we go
+        last_change = None
+
+        def press(where):
+            self.backend.press_combo(step.get("combo"), 0)
+            self._log(f"#{index + 1} pressed at {where:.0%} (spot {zone[0]:.0%}\u2013{zone[1]:.0%})")
+            return "ok"
+
+        while not self._stop.is_set():
+            if clock() > deadline:
+                self._log(f"#{index + 1} the marker never reached the spot")
+                return "fail"
+            # The picture shows the screen as it was when the grab began, so
+            # that is the moment the marker was where we're about to measure.
+            seen_at = clock()
+            image = grab(region).image
+            if step.get("zone_mode") == "color":
+                span = matcher.zone_span(image, step.get("zone_rgb"), tol, bridge_rgb=rgb)
+                if span is not None:
+                    zone = span    # keep the last place it was seen if hidden
+            x = matcher.marker_position(image, rgb, tol)
+            if x is not None:
+                if not samples or abs(x - samples[-1][0]) > 1e-6:
+                    # A new picture. Looks often outpace the screen redrawing;
+                    # a repeated picture says nothing about speed, so only
+                    # pictures that changed are used to measure it.
+                    if len(samples) >= 2:
+                        d_old = samples[-1][0] - samples[-2][0]
+                        if d_old * (x - samples[-1][0]) < 0:
+                            samples = samples[-1:]      # it bounced: start fresh
+                    if samples:
+                        frame = min(0.7 * frame + 0.3 * max(seen_at - samples[-1][1], 0.001),
+                                    0.1)
+                    samples.append((x, seen_at))
+                    samples = [p for p in samples if seen_at - p[1] <= 0.15][-8:]
+                    last_change = seen_at
+                x_now, v, confirmed = fit_motion(samples)
+                if last_change is not None and seen_at - last_change > STILL_AFTER:
+                    v, confirmed = 0.0, True            # genuinely not moving
+                # Next chance to decide: this picture's age (grab + work so
+                # far) plus the wait for another new picture.
+                horizon = (clock() - samples[-1][1]) + 1.5 * frame
+                action, delay = timing_decision(x_now, v, zone, lead, horizon, confirmed)
+                if action == "press":
+                    delay -= clock() - samples[-1][1]   # time since that picture
+                    if delay > 0:
+                        if sleep:
+                            sleep(delay)
+                        elif not self._sleep(delay):
+                            return "fail"
+                    return press(x_now)
+            # Yield briefly; the grab itself paces the loop.
+            if sleep:
+                sleep(0.001)
+            elif not self._sleep(0.001):
+                return "fail"
+        return "fail"
+
     def _act(self, action, x, y):
         b = self.backend
         b.move(x, y)
@@ -277,5 +422,8 @@ class Runner:
         if k == "wait":
             self._sleep(float(step.get("seconds") or 0))
             return "ok"
+
+        if k == "timing":
+            return self._run_timing(step, index)
 
         raise ValueError(f"unknown step kind {k}")

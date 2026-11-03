@@ -244,7 +244,7 @@ _DRAWERS = {
 KIND_ICONS = {
     "click_image": "crosshair", "wait_image": "eye", "if_image": "branch",
     "click_color": "dropper", "click": "cursor", "key": "keyboard", "type": "text",
-    "scroll": "scroll", "wait": "clock",
+    "scroll": "scroll", "wait": "clock", "timing": "bolt",
 }
 
 
