@@ -720,8 +720,9 @@ class SimulatedBar:
 
 
 def timing_step(**kw):
+    # The simulated bar draws a red marker and (optionally) a green spot.
     params = dict(region=[0, 0, 200, 30], zone=[0.6, 0.66], lead_ms=0, timeout=5.0,
-                  combo="space")
+                  combo="space", marker_rgb=[230, 30, 30], zone_mode="fixed")
     params.update(kw)
     return Step.create("timing", **params)
 
@@ -873,6 +874,48 @@ class TimingTests(unittest.TestCase):
         msg, presses = self._run(bar, timing_step(timeout=0.5))
         self.assertIn("failed", msg)
         self.assertEqual(presses, [])
+
+    def test_defaults_are_black_line_on_red_block(self):
+        step = Step.create("timing")
+        self.assertEqual(step.get("marker_rgb"), [0, 0, 0])
+        self.assertEqual(step.get("zone_mode"), "color")
+        self.assertEqual(step.get("zone_rgb"), [215, 7, 7])
+
+    def test_black_line_over_red_block(self):
+        # The meter style from a real game: a thin black line sweeping over a
+        # white tick bar, pressed when it's on the red block. The line covers
+        # part of the block as it crosses, which must not hide the block.
+        class BlackOnRed(SimulatedBar):
+            def grab_fast(self, region):
+                img = Image.new("RGB", (self.W, self.H), (120, 200, 90))
+                d = ImageDraw.Draw(img)
+                d.rectangle([0, 13, self.W, 16], fill=(255, 255, 255))
+                x0, x1 = (int(v * (self.W - 1)) for v in self.spot)
+                d.rectangle([x0, 8, x1, 21], fill=(215, 7, 7))
+                mx = int(round(self.pos * (self.W - 1)))
+                d.rectangle([mx - 1, 1, mx, 29], fill=(0, 0, 0))
+                self._advance(self.frame)
+                return Shot(img, 0, 0, 1.0)
+            grab = grab_fast
+
+        for speed in (0.4, 1.0):
+            bar = BlackOnRed(speed=speed, frame=0.01, start=0.05, spot=(0.62, 0.66))
+            step = Step.create("timing", region=[0, 0, 200, 30], lead_ms=0, timeout=5.0)
+            _, presses = self._run(bar, step)
+            self.assertTrue(0.62 <= presses[0][1] <= 0.66, (speed, presses))
+
+    def test_reads_the_real_screenshot_style(self):
+        # Measured on a real screenshot of this meter (221 px wide): black
+        # line at 136 px, red block from 138 px - just about to hit.
+        img = Image.new("RGB", (221, 54), (110, 190, 80))
+        d = ImageDraw.Draw(img)
+        d.rectangle([24, 19, 189, 22], fill=(255, 255, 255))
+        d.rectangle([138, 13, 147, 25], fill=(215, 7, 7))
+        d.rectangle([136, 5, 137, 34], fill=(0, 0, 0))
+        self.assertAlmostEqual(matcher.marker_position(img, (0, 0, 0)) * 220, 136.5, delta=0.6)
+        lo, hi = matcher.zone_span(img, (215, 7, 7), bridge_rgb=(0, 0, 0))
+        self.assertAlmostEqual(lo * 220, 138, delta=0.6)
+        self.assertAlmostEqual(hi * 220, 147, delta=0.6)
 
     def test_needs_a_bar_area(self):
         flow = Flow()

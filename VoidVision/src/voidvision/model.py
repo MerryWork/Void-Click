@@ -103,10 +103,12 @@ KINDS = {
         "label": "Hit the spot",
         "group": "vision",
         "fields": [("region", "Bar area", "region", None, None),
-                   ("marker_rgb", "Marker colour", "color", [230, 30, 30], None),
-                   ("zone_mode", "The spot is", "choice", "fixed", ["fixed", "color"]),
+                   # Defaults match the common meter: a black line sweeping
+                   # over a bar, pressed when it's on a red block.
+                   ("marker_rgb", "Marker colour", "color", [0, 0, 0], None),
+                   ("zone_mode", "The spot is", "choice", "color", ["fixed", "color"]),
                    ("zone", "Spot", "zone", [0.45, 0.55], None),
-                   ("zone_rgb", "Spot colour", "color", [60, 220, 120], None),
+                   ("zone_rgb", "Spot colour", "color", [215, 7, 7], None),
                    ("tolerance", "Colour range", "int", 40, None),
                    ("combo", "Then press", "key", "space", None),
                    ("lead_ms", "Press early (ms)", "int", 25, None),

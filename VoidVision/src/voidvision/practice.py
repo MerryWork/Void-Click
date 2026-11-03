@@ -1,7 +1,7 @@
 """A redrawn timing bar to practise against and to test Hit the spot steps.
 
-A clean white track with ticks, a red marker sweeping back and forth and a
-green spot. Press any key while it has focus and it reports how close the
+A clean white track with ticks, a red block marking the spot and a thin
+black marker sweeping back and forth across it. Press any key while it has focus and it reports how close the
 press was - exactly what a "Hit the spot" step should achieve in a game.
 """
 
@@ -12,10 +12,10 @@ import tkinter as tk
 from . import theme
 from . import widgets as w
 
-BAR_W, BAR_H = 520, 64
-TRACK_Y = 34
-MARKER = (230, 30, 30)
-SPOT = (60, 220, 120)
+BAR_W, BAR_H = 520, 72
+TRACK_Y = 36
+MARKER = (0, 0, 0)        # the moving line
+SPOT = (215, 7, 7)        # the block to hit
 SPEEDS = {"slow": 0.35, "medium": 0.7, "fast": 1.3}    # bar widths per second
 
 
@@ -34,14 +34,14 @@ class PracticeBar(tk.Toplevel):
         self.pos, self.dir = 0.0, 1
         self.shown, self.shown_dir = 0.0, 1    # the marker as last drawn on screen
         self.stutter = 0.0                     # longest gap between redraws lately
-        self.zone = [0.62, 0.70]
+        self.zone = [0.62, 0.67]
         self.hits = self.tries = 0
         self._last = time.perf_counter()
 
         body = tk.Frame(self, bg=theme.BG)
         body.pack(padx=18, pady=16)
         w.label(body, "Practice bar", size=13, bold=True).pack(anchor="w")
-        w.label(body, "Press any key when the red marker is on the green spot - or let a "
+        w.label(body, "Press any key when the black line is on the red block - or let a "
                       "Hit the spot step do it. Keep this window focused so it hears the key.",
                 muted=True, size=9, wraplength=BAR_W, justify="left").pack(anchor="w",
                                                                          pady=(2, 10))
@@ -76,17 +76,20 @@ class PracticeBar(tk.Toplevel):
         c.delete("all")
         x0, x1 = 16, BAR_W - 16
         span = x1 - x0
-        zx0, zx1 = x0 + self.zone[0] * span, x0 + self.zone[1] * span
-        c.create_rectangle(zx0, TRACK_Y - 12, zx1, TRACK_Y + 12, fill=_hex(SPOT), outline="")
+        # White track with ticks: tall ones at the ends, short ones between.
         c.create_rectangle(x0, TRACK_Y - 2, x1, TRACK_Y + 2, fill="white", outline="")
         for i in range(11):
             tx = x0 + span * i / 10
-            tall = 9 if i in (0, 5, 10) else 6
-            c.create_rectangle(tx - 1, TRACK_Y - tall, tx + 1, TRACK_Y + tall, fill="white",
+            tall = 20 if i in (0, 10) else 12
+            c.create_rectangle(tx - 2, TRACK_Y - tall, tx + 2, TRACK_Y + tall, fill="white",
                                outline="")
+        # The spot: a red block sitting on the track.
+        zx0, zx1 = x0 + self.zone[0] * span, x0 + self.zone[1] * span
+        c.create_rectangle(zx0, TRACK_Y - 14, zx1, TRACK_Y + 14, fill=_hex(SPOT), outline="")
+        # The marker: a thin black line, taller than everything else.
         self.shown, self.shown_dir = self.pos, self.dir
         mx = x0 + self.pos * span
-        c.create_rectangle(mx - 3, TRACK_Y - 15, mx + 3, TRACK_Y + 15, fill=_hex(MARKER),
+        c.create_rectangle(mx - 2, TRACK_Y - 28, mx + 2, TRACK_Y + 28, fill=_hex(MARKER),
                            outline="")
 
     def _tick(self):

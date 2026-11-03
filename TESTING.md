@@ -23,7 +23,7 @@ pip install pynput pillow numpy
 | Order | Suite       | Where the code is                 | Size        |
 |-------|-------------|-----------------------------------|-------------|
 | 1     | Void Click  | `Voidclick1.0.0.zip` (unpacked to a temp folder) | 196 checks |
-| 2     | Void Vision | `VoidVision/tests/`               | 72 tests    |
+| 2     | Void Vision | `VoidVision/tests/`               | 75 tests    |
 
 Neither suite moves your real mouse or presses real keys. Input is replaced by stand-ins, so it's safe to run while you use the computer.
 
@@ -43,7 +43,7 @@ The last lines are a summary:
 
 ```
   [PASS] Void Click   196 passed, 0 failed  (9.9s)
-  [PASS] Void Vision  72 tests, all OK  (5.6s)
+  [PASS] Void Vision  75 tests, all OK  (5.6s)
 
   All suites passed.
 ```

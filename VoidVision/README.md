@@ -104,12 +104,13 @@ the spot - add More > Hit the spot:
 
 1. Bar area: click the area button and drag around the bar. This step only
    ever looks at that area, so it can look many times a second.
-2. Marker colour: use the dropper on the marker (default red).
+2. Marker colour: the moving line. Defaults to black; use the dropper if
+   yours is another colour.
 3. The spot is:
+     A colour     (default) the spot is a coloured block - red by default -
+                  and may move each round; it's found on every look, even
+                  while the marker is crossing it
      Fixed place  drag across the drawing of the bar to mark the spot
-     A colour     the spot is drawn in its own colour (e.g. green) and may
-                  move each round; pick that colour and it's found on
-                  every look
 4. Then press: the key, e.g. space (or press Record and hit it).
 5. Test shows where it sees the marker right now, drawn on the bar.
 
@@ -124,14 +125,15 @@ Loop the flow with a short Wait after the step to keep hitting round after
 round.
 
 Practice bar: the lightning button on a Hit the spot step opens a redrawn
-practice bar - a white track with ticks, a sweeping red marker and a green
-spot. It scores every key press ("Hit - 3 ms from the centre"). "Use for my
+practice bar - a white track with ticks, a red block to hit and a thin black
+line sweeping across it. It scores every key press ("Hit - 3 ms from the centre"). "Use for my
 step" points the step at it, so you can press Run and watch the step play.
 Keep the practice bar focused so it hears the key.
 
-Tested with real key presses against the practice bar: 45 of 45 presses on
-the spot across slow, medium and fast speeds, fixed and moving spots,
-typically within a few milliseconds of the centre.
+Tested with real key presses against the practice bar: every press on the
+spot (75 of 75 across the red/green and black-on-red styles) at slow, medium
+and fast speeds, fixed and moving spots, typically within a few
+milliseconds of the centre.
 
 
 STEPS
