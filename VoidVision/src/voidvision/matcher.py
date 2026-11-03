@@ -1,0 +1,288 @@
+"""Finding a captured image on the screen.
+
+Matching is normalised cross-correlation (NCC) on greyscale, which tolerates
+brightness and contrast shifts such as hover glows or a dimmed window. A score
+of 1.0 is a pixel-perfect match; around 0.8 and up is usually the same thing.
+
+NCC over a whole screen is computed with FFTs (numpy only). Large templates are
+searched first on a 2x/4x downscaled copy, and the best few candidates are then
+re-scored at full resolution, which keeps a 1080p search well under a second.
+If OpenCV happens to be installed it is used for the score map instead - it is
+much faster, but never required.
+
+Greyscale matching cannot tell a red button from a green one of the same
+brightness, so `color=True` additionally compares the colours of each
+candidate and rejects ones that differ.
+"""
+
+import time
+from dataclasses import dataclass
+
+import numpy as np
+
+try:  # optional accelerator
+    import cv2  # type: ignore
+except Exception:  # pragma: no cover - depends on the machine
+    cv2 = None
+
+FLAT_STD = 2.0        # templates flatter than this use a difference metric
+CANDIDATES = 6        # coarse-search candidates refined at full resolution
+COLOR_TOLERANCE = 0.12
+
+
+@dataclass
+class Match:
+    x: int        # top-left, in haystack pixels
+    y: int
+    w: int
+    h: int
+    score: float
+    elapsed_ms: float = 0.0
+
+    @property
+    def center(self):
+        return self.x + self.w / 2.0, self.y + self.h / 2.0
+
+
+# ---------------------------------------------------------------- conversions
+
+def as_rgb(image):
+    """PIL image or array -> HxWx3 uint8 array."""
+    if isinstance(image, np.ndarray):
+        arr = image
+        if arr.ndim == 2:
+            return np.repeat(arr[:, :, None], 3, axis=2).astype(np.uint8)
+        return arr[:, :, :3].astype(np.uint8)
+    return np.asarray(image.convert("RGB"), dtype=np.uint8)
+
+
+_LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
+def to_gray(rgb):
+    return rgb[:, :, :3].astype(np.float32) @ _LUMA
+
+
+def _fast_len(n):
+    """Smallest 2^a * 3^b * 5^c >= n - FFTs of these sizes are several times faster."""
+    best = 1 << (n - 1).bit_length()
+    p5 = 1
+    while p5 < best:
+        p35 = p5
+        while p35 < best:
+            q = p35
+            while q < n:
+                q *= 2
+            best = min(best, q)
+            p35 *= 3
+        p5 *= 5
+    return best
+
+
+def _downscale(gray, factor):
+    if factor == 1:
+        return gray
+    h = gray.shape[0] // factor * factor
+    w = gray.shape[1] // factor * factor
+    g = gray[:h, :w]
+    return g.reshape(h // factor, factor, w // factor, factor).mean(axis=(1, 3))
+
+
+# ---------------------------------------------------------------- score maps
+
+def _window_sums(a, h, w):
+    """Sum of every h x w window of `a` (valid positions only)."""
+    ii = np.zeros((a.shape[0] + 1, a.shape[1] + 1), dtype=np.float64)
+    ii[1:, 1:] = a.cumsum(0).cumsum(1)
+    return ii[h:, w:] - ii[:-h, w:] - ii[h:, :-w] + ii[:-h, :-w]
+
+
+def _correlate(image, kernel):
+    """Valid-mode cross-correlation via FFT."""
+    H, W = image.shape
+    h, w = kernel.shape
+    shape = (_fast_len(H + h - 1), _fast_len(W + w - 1))
+    f = np.fft.rfft2(image, shape)
+    k = np.fft.rfft2(kernel[::-1, ::-1], shape)
+    full = np.fft.irfft2(f * k, shape)
+    return full[h - 1:H, w - 1:W]
+
+
+def score_map(hay, templ):
+    """Similarity of `templ` at every position of `hay` (both greyscale)."""
+    h, w = templ.shape
+    if hay.shape[0] < h or hay.shape[1] < w:
+        return np.zeros((0, 0))
+    # float64 throughout: the variance below is a difference of two large
+    # sums, which float32 cancels into noise on a full screen.
+    hay = np.asarray(hay, dtype=np.float64)
+    templ = np.asarray(templ, dtype=np.float64)
+    n = float(h * w)
+    t_std = templ.std()
+
+    if t_std < FLAT_STD:
+        # A flat patch (a solid colour swatch) has no shape for NCC to latch
+        # onto - score by mean absolute closeness instead.
+        mean = _window_sums(hay, h, w) / n
+        sq = _window_sums(hay * hay, h, w) / n
+        spread = np.sqrt(np.maximum(sq - mean * mean, 0))
+        diff = np.abs(mean - templ.mean()) + spread
+        return 1.0 - np.clip(diff / 64.0, 0, 1)
+
+    if cv2 is not None:
+        res = cv2.matchTemplate(hay.astype(np.float32), templ.astype(np.float32),
+                                cv2.TM_CCOEFF_NORMED)
+        return np.nan_to_num(res.astype(np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+
+    t = templ - templ.mean()
+    t_norm = np.sqrt((t * t).sum())
+    corr = _correlate(hay, t)
+    s1 = _window_sums(hay, h, w)
+    s2 = _window_sums(hay * hay, h, w)
+    var = np.maximum(s2 - s1 * s1 / n, 0)
+    denom = np.sqrt(var) * t_norm
+    out = np.zeros_like(corr)
+    ok = denom > 1e-6 * max(t_norm, 1.0) * np.sqrt(n)
+    out[ok] = corr[ok] / denom[ok]
+    return np.clip(out, -1.0, 1.0)
+
+
+def _peaks(scores, count, min_dist_y, min_dist_x, floor=-1.0):
+    """Top `count` positions, suppressing neighbours of each pick."""
+    s = scores.copy()
+    found = []
+    for _ in range(count):
+        if s.size == 0:
+            break
+        idx = int(np.argmax(s))
+        y, x = divmod(idx, s.shape[1])
+        val = float(s[y, x])
+        if val <= floor:
+            break
+        found.append((y, x, val))
+        s[max(0, y - min_dist_y):y + min_dist_y + 1,
+          max(0, x - min_dist_x):x + min_dist_x + 1] = -2.0
+    return found
+
+
+def _color_similarity(hay_rgb, templ_rgb, x, y):
+    h, w = templ_rgb.shape[:2]
+    patch = hay_rgb[y:y + h, x:x + w].astype(np.float64)
+    if patch.shape[:2] != (h, w):
+        return 0.0
+    t = templ_rgb.astype(np.float64)
+    # Compare average colour per channel - robust to small misalignment but
+    # catches a red-vs-green swap that greyscale cannot see.
+    diff = np.abs(patch.mean(axis=(0, 1)) - t.mean(axis=(0, 1))).max() / 255.0
+    return 1.0 - diff
+
+
+# ---------------------------------------------------------------- public API
+
+def _search(hay_rgb, templ_rgb, count, color):
+    hay = to_gray(hay_rgb)
+    templ = to_gray(templ_rgb)
+    h, w = templ.shape
+    if hay.shape[0] < h or hay.shape[1] < w:
+        return []
+
+    factor = 1
+    if cv2 is None and templ.std() >= FLAT_STD:
+        smallest = min(h, w)
+        if smallest >= 64 and hay.size > 400_000:
+            factor = 4
+        elif smallest >= 24 and hay.size > 200_000:
+            factor = 2
+
+    if factor == 1:
+        scores = score_map(hay, templ)
+        picks = _peaks(scores, count, max(1, h // 2), max(1, w // 2))
+        results = [(x, y, v) for y, x, v in picks]
+    else:
+        coarse = score_map(_downscale(hay, factor), _downscale(templ, factor))
+        picks = _peaks(coarse, max(count, CANDIDATES),
+                       max(1, h // (2 * factor)), max(1, w // (2 * factor)))
+        results = []
+        margin = factor * 2
+        for cy, cx, _ in picks:
+            x0 = max(0, cx * factor - margin)
+            y0 = max(0, cy * factor - margin)
+            x1 = min(hay.shape[1], cx * factor + w + margin)
+            y1 = min(hay.shape[0], cy * factor + h + margin)
+            local = score_map(hay[y0:y1, x0:x1], templ)
+            if local.size == 0:
+                continue
+            ly, lx = divmod(int(np.argmax(local)), local.shape[1])
+            results.append((x0 + lx, y0 + ly, float(local[ly, lx])))
+        # Refinement can land two coarse picks on the same spot.
+        results.sort(key=lambda r: -r[2])
+        unique = []
+        for r in results:
+            if all(abs(r[0] - u[0]) > w // 2 or abs(r[1] - u[1]) > h // 2 for u in unique):
+                unique.append(r)
+        results = unique
+
+    if color:
+        rescored = []
+        for x, y, v in results:
+            sim = _color_similarity(hay_rgb, templ_rgb, x, y)
+            if sim < 1.0 - COLOR_TOLERANCE:
+                v = min(v, sim - COLOR_TOLERANCE)
+            rescored.append((x, y, v))
+        results = sorted(rescored, key=lambda r: -r[2])
+    return [Match(int(x), int(y), w, h, float(v)) for x, y, v in results]
+
+
+def find(haystack, template, confidence=0.85, color=False):
+    """Best match of `template` in `haystack`, or None if below `confidence`."""
+    start = time.perf_counter()
+    hay_rgb, templ_rgb = as_rgb(haystack), as_rgb(template)
+    results = _search(hay_rgb, templ_rgb, CANDIDATES if color else 1, color)
+    elapsed = (time.perf_counter() - start) * 1000
+    if not results:
+        return None
+    best = results[0]
+    best.elapsed_ms = elapsed
+    return best if best.score >= confidence else None
+
+
+def best(haystack, template, color=False):
+    """Best match regardless of confidence - for 'how close was it?' feedback."""
+    start = time.perf_counter()
+    results = _search(as_rgb(haystack), as_rgb(template), CANDIDATES if color else 1, color)
+    if not results:
+        return None
+    results[0].elapsed_ms = (time.perf_counter() - start) * 1000
+    return results[0]
+
+
+def find_all(haystack, template, confidence=0.85, color=False, limit=50):
+    """Every non-overlapping match at or above `confidence`, best first."""
+    results = _search(as_rgb(haystack), as_rgb(template), limit, color)
+    return [m for m in results if m.score >= confidence]
+
+
+def find_color(haystack, rgb, tolerance=12):
+    """Centre of the first patch of `rgb` (+/- tolerance per channel), or None.
+
+    Returns a Match whose box spans the connected run of matching pixels near
+    the first hit, so clicking its centre lands inside the coloured area.
+    """
+    start = time.perf_counter()
+    arr = as_rgb(haystack).astype(np.int16)
+    target = np.array(rgb[:3], dtype=np.int16)
+    mask = (np.abs(arr - target) <= tolerance).all(axis=2)
+    ys, xs = np.nonzero(mask)
+    if ys.size == 0:
+        return None
+    y0, x0 = int(ys[0]), int(xs[0])
+    # Grow a box around the first hit within a local neighbourhood.
+    r = 40
+    sub = mask[y0:y0 + r * 2, max(0, x0 - r):x0 + r]
+    sy, sx = np.nonzero(sub)
+    left = max(0, x0 - r) + int(sx.min())
+    right = max(0, x0 - r) + int(sx.max())
+    bottom = y0 + int(sy.max())
+    m = Match(left, y0, right - left + 1, bottom - y0 + 1, 1.0)
+    m.elapsed_ms = (time.perf_counter() - start) * 1000
+    return m

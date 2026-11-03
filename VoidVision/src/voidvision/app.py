@@ -1,0 +1,429 @@
+"""Main window: icon rail + pages, and the glue between UI, runner and screen."""
+
+import os
+import sys
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+from . import config, draw, icons, matcher, model, theme
+from . import widgets as w
+from .overlay import CaptureOverlay, Highlight
+from .page_flow import FlowPage
+from .page_images import ImagesPage
+from .page_settings import SettingsPage
+from .runner import Runner, look_once
+from .screen import ScreenBackend, virtual_screen
+
+APP_NAME = "Void Vision"
+FILE_TYPES = [("Void Vision flow", "*.vflow"), ("All files", "*.*")]
+
+NAV = [("flow", "flow", "Flow"), ("images", "images", "Images"), ("settings", "gear", "Settings")]
+
+
+class RailButton(tk.Canvas):
+    def __init__(self, master, icon, text, command):
+        super().__init__(master, width=60, height=58, bg=theme.BG_RAIL, highlightthickness=0, bd=0,
+                         cursor="hand2")
+        self.icon, self.text, self.command = icon, text, command
+        self.active = self.hover = False
+        self.bind("<Enter>", lambda e: self._h(True))
+        self.bind("<Leave>", lambda e: self._h(False))
+        self.bind("<Button-1>", lambda e: command())
+        self.redraw()
+
+    def _h(self, v):
+        self.hover = v
+        self.redraw()
+
+    def redraw(self):
+        self.delete("all")
+        if self.active or self.hover:
+            draw.rrect(self, 4, 2, 52, 54, 10, theme.BG_FIELD if self.active else theme.BG_CARD,
+                       None, theme.BG_RAIL)
+        if self.active:
+            draw.rrect(self, 0, 16, 3, 26, 1.5, theme.GREEN, None, theme.BG_RAIL)
+        color = theme.GREEN if self.active else (theme.FG_SOFT if self.hover else theme.FG_MUTED)
+        self.create_image(30, 22, image=icons.get(self.icon, 20, color))
+        self.create_text(30, 44, text=self.text, fill=theme.FG if self.active else theme.FG_MUTED,
+                         font=theme.font(8, "bold" if self.active else "normal"))
+
+
+class MainWindow(tk.Tk):
+    def __init__(self, cfg, hotkey_manager):
+        super().__init__(className="VoidVision")
+        theme.init(self)
+        self.cfg = cfg
+        self.hotkeys = hotkey_manager
+        self.title(APP_NAME)
+        self.geometry("1000x680")
+        self.minsize(900, 600)
+        self._icon = draw._cached(("winicon",), lambda: icons.render_logo(64))
+        self.iconphoto(True, self._icon)
+        _dark_titlebar(self)
+
+        self.backend = ScreenBackend(virtual_screen(self))
+        self.runner = Runner(self.backend,
+                             on_state=lambda r, m: self.after(0, self._on_run_state, r, m),
+                             on_step=lambda i, s: self.after(0, self.flow_page.set_step_status, i, s),
+                             on_log=lambda m: self.after(0, self.flow_page.set_log, m))
+        self.flow = model.Flow()
+        self.path = None
+        self.dirty = False
+        self._busy = False   # a capture/test is in progress
+        self._load_initial()
+
+        self._build()
+        self.apply_settings()
+        self.show("flow")
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind_all("<Control-s>", lambda e: self.save_flow())
+        self.bind_all("<Control-o>", lambda e: self.open_flow())
+        self.bind_all("<Delete>", self._delete_key)
+
+    # ------------------------------------------------------------------ build
+
+    def _build(self):
+        rail = tk.Frame(self, bg=theme.BG_RAIL, width=68)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+        logo = tk.Canvas(rail, width=68, height=64, bg=theme.BG_RAIL, highlightthickness=0)
+        logo.pack(pady=(10, 8))
+        logo.create_image(34, 32, image=icons.logo(36))
+        self.nav = {}
+        for key, icon, text in NAV:
+            b = RailButton(rail, icon, text, lambda k=key: self.show(k))
+            b.pack(pady=2)
+            self.nav[key] = b
+        self.live = tk.Canvas(rail, width=68, height=44, bg=theme.BG_RAIL, highlightthickness=0)
+        self.live.pack(side="bottom", pady=10)
+        tk.Frame(self, bg=theme.BORDER, width=1).pack(side="left", fill="y")
+
+        self.container = tk.Frame(self, bg=theme.BG)
+        self.container.pack(side="left", fill="both", expand=True)
+        self.container.rowconfigure(0, weight=1)
+        self.container.columnconfigure(0, weight=1)
+        self.flow_page = FlowPage(self.container, self)
+        self.images_page = ImagesPage(self.container, self)
+        self.settings_page = SettingsPage(self.container, self)
+        self.pages = {"flow": self.flow_page, "images": self.images_page,
+                      "settings": self.settings_page}
+        for p in self.pages.values():
+            p.grid(row=0, column=0, sticky="nsew")
+        self.toaster = w.Toast(self)
+        self._draw_live(False)
+        self.flow_page.refresh(keep_selection=False)
+        self.images_page.refresh()
+        self._update_title()
+
+    def _draw_live(self, running):
+        c = self.live
+        c.delete("all")
+        color = theme.ORANGE if running else theme.GREEN
+        draw.circle(c, 34, 12, 10, color, None)
+        if running:
+            draw.circle(c, 34, 12, 18, theme.ORANGE_DIM, None)
+            draw.circle(c, 34, 12, 10, color, None)
+        c.create_text(34, 32, text="Running" if running else "Idle", fill=theme.FG_MUTED,
+                      font=theme.font(8))
+
+    def show(self, key):
+        for k, b in self.nav.items():
+            b.active = k == key
+            b.redraw()
+        self.pages[key].tkraise()
+        self.current = key
+
+    def toast(self, message, kind="info"):
+        self.toaster.show(message, kind)
+
+    def confirm(self, title, message):
+        return messagebox.askyesno(title, message, parent=self)
+
+    # ------------------------------------------------------------------ state
+
+    def mark_dirty(self):
+        if not self.dirty:
+            self.dirty = True
+            self._update_title()
+
+    def _update_title(self):
+        name = os.path.basename(self.path) if self.path else self.flow.name
+        self.title(name + (" •" if self.dirty else "") + " — " + APP_NAME)
+
+    def on_library_changed(self):
+        self.images_page.refresh()
+        self.flow_page.refresh()
+
+    def apply_settings(self):
+        cfg = self.cfg
+        self.attributes("-topmost", bool(cfg["always_on_top"]))
+        self.runner.poll = max(0.02, cfg["poll_ms"] / 1000.0)
+        self.hotkeys.register("run", cfg["run_hotkey"], lambda: self.after(0, self.toggle_run))
+        self.hotkeys.register("capture", cfg["capture_hotkey"],
+                              lambda: self.after(0, self._hotkey_capture))
+        self.hotkeys.register("panic", cfg["panic_hotkey"], lambda: self.after(0, self.panic))
+        config.save(cfg)
+        from . import hotkeys
+
+        hk = hotkeys.label(cfg["run_hotkey"]) if cfg["run_hotkey"] else ""
+        if not self.runner.running:
+            self.flow_page.run_btn.configure_button(text=f"Run  {hk}".strip())
+
+    # ------------------------------------------------------------------ files
+
+    def _load_initial(self):
+        for path in (self.cfg.get("last_flow"), str(config.autosave_path())):
+            if path and os.path.exists(path):
+                try:
+                    self.flow = model.load_flow(path)
+                    self.path = path if path == self.cfg.get("last_flow") else None
+                    return
+                except Exception:
+                    continue
+
+    def _discard_ok(self):
+        if not self.dirty or not self.flow.steps:
+            return True
+        ans = messagebox.askyesnocancel("Unsaved changes", "Save changes to this flow first?",
+                                        parent=self)
+        if ans is None:
+            return False
+        if ans:
+            return self.save_flow()
+        return True
+
+    def new_flow(self):
+        if self.runner.running or not self._discard_ok():
+            return
+        self.flow, self.path, self.dirty = model.Flow(), None, False
+        self.cfg["last_flow"] = ""
+        self._after_load()
+
+    def open_flow(self):
+        if self.runner.running or not self._discard_ok():
+            return
+        path = filedialog.askopenfilename(parent=self, filetypes=FILE_TYPES, title="Open flow")
+        if not path:
+            return
+        try:
+            self.flow = model.load_flow(path)
+        except Exception as exc:
+            self.toast(f"Couldn't open: {exc}", "error")
+            return
+        self.path, self.dirty = path, False
+        self.cfg["last_flow"] = path
+        config.save(self.cfg)
+        self._after_load()
+        self.toast(f"Opened {os.path.basename(path)}", "ok")
+
+    def save_flow(self, as_new=False):
+        path = self.path
+        if as_new or not path:
+            path = filedialog.asksaveasfilename(parent=self, filetypes=FILE_TYPES,
+                                                defaultextension=".vflow", title="Save flow",
+                                                initialfile=self.flow.name + ".vflow")
+            if not path:
+                return False
+            self.flow.name = os.path.splitext(os.path.basename(path))[0]
+        try:
+            model.save_flow(self.flow, path)
+        except OSError as exc:
+            self.toast(f"Couldn't save: {exc}", "error")
+            return False
+        self.path, self.dirty = path, False
+        self.cfg["last_flow"] = path
+        config.save(self.cfg)
+        self._update_title()
+        self.flow_page.refresh()
+        self.toast("Saved", "ok")
+        return True
+
+    def _after_load(self):
+        self.flow_page.refresh(keep_selection=False)
+        self.images_page.refresh()
+        self._update_title()
+
+    def _autosave(self):
+        try:
+            config.data_dir().mkdir(parents=True, exist_ok=True)
+            model.save_flow(self.flow, str(config.autosave_path()))
+        except OSError:
+            pass
+
+    # ------------------------------------------------------------------ run
+
+    def toggle_run(self):
+        if self.runner.running:
+            self.runner.stop()
+        else:
+            self.start_run()
+
+    def start_run(self, start_at=0):
+        if self.runner.running or self._busy:
+            return
+        if not self.flow.steps:
+            self.toast("Add a step first", "warn")
+            return
+        problems = self.flow.problems()
+        if problems:
+            self.toast(problems[0], "error")
+            self.show("flow")
+            return
+        self._autosave()
+        if self.cfg["hide_while_running"]:
+            self.iconify()
+        # Give the window manager a moment to actually get the window out of
+        # the way before the first screenshot.
+        delay = 350 if self.cfg["hide_while_running"] else 0
+        self.after(delay, lambda: self.runner.start(self.flow, start_at=start_at))
+
+    def panic(self):
+        self.runner.stop()
+
+    def _on_run_state(self, running, message):
+        self.flow_page.set_running(running)
+        self._draw_live(running)
+        if running:
+            self.flow_page.set_status("Running", "run")
+            return
+        self.apply_settings()
+        failed = message not in ("Finished", "Stopped")
+        self.flow_page.set_status("Failed" if failed else message,
+                                  "fail" if failed else ("ok" if message == "Finished" else "idle"))
+        if self.state() == "iconic":
+            self.deiconify()
+        self.toast(message, "error" if failed else ("ok" if message == "Finished" else "info"))
+
+    # ------------------------------------------------------------------ capture & test
+
+    def _hotkey_capture(self):
+        def done(image):
+            if image is not None:
+                t = self.flow.add_template(image)
+                self.mark_dirty()
+                self.on_library_changed()
+                self.images_page.select(t)
+                self.toast(f"Captured {t.name}", "ok")
+        self.capture("image", done)
+
+    def check_capture(self, image):
+        """Warn about captures that will match badly. Returns False to reject."""
+        if image is None:
+            return False
+        if min(image.size) < 6:
+            self.toast("Too small — drag a box at least 6 px each way", "warn")
+            return False
+        if matcher.to_gray(matcher.as_rgb(image)).std() < matcher.FLAT_STD:
+            self.toast("That's one flat colour — Find colour suits it better", "warn")
+        return True
+
+    def capture(self, mode, on_done):
+        """Hide, screenshot, let the user select, come back. mode: image|region|color."""
+        if self._busy or self.runner.running:
+            return
+        self._busy = True
+        was_iconic = self.state() == "iconic"
+        self.withdraw()
+
+        def grab():
+            try:
+                shot = self.backend.grab()
+            except Exception as exc:
+                self._busy = False
+                self.deiconify()
+                self.toast(f"Screen capture failed: {exc}", "error")
+                return
+
+            def finished(result):
+                self._busy = False
+                if not was_iconic:
+                    self.deiconify()
+                    self.lift()
+                if mode == "image" and not self.check_capture(result):
+                    result = None
+                on_done(result)
+            CaptureOverlay(self, shot, mode, finished)
+        self.after(300, grab)
+
+    def test_step(self, step):
+        if step.kind in model.IMAGE_KINDS and self.flow.template_for(step) is None:
+            self.toast("Capture an image for this step first", "warn")
+            return
+        self._probe(lambda: look_once(self.backend, self.flow, step),
+                    float(step.get("confidence") or 0) if step.kind != "click_color" else None)
+
+    def test_template(self, template):
+        probe = model.Step.create("click_image", template=template.id,
+                                  confidence=float(self.cfg["default_confidence"]))
+        self.test_step_with(probe)
+
+    def test_step_with(self, step):
+        flow = self.flow
+        self._probe(lambda: look_once(self.backend, flow, step), float(step.get("confidence")))
+
+    def _probe(self, search, confidence):
+        if self._busy or self.runner.running:
+            return
+        self._busy = True
+        hide = self.cfg["hide_while_running"]
+        if hide:
+            self.withdraw()
+
+        def work():
+            try:
+                result = search()
+                error = None
+            except Exception as exc:
+                result, error = (None, 0.0), exc
+            self.after(0, finish, result, error)
+
+        def finish(result, error):
+            self._busy = False
+            hit, best = result
+            if hide:
+                self.deiconify()
+            if error is not None:
+                self.toast(f"Test failed: {error}", "error")
+                return
+            if hit is None:
+                need = f" (needs {confidence:.0%})" if confidence else ""
+                self.toast(f"Not found — best match {best:.0%}{need}", "warn")
+                return
+            self.toast(f"Found — {hit.score:.0%} match in {hit.elapsed_ms:.0f} ms", "ok")
+            if self.cfg["highlight_tests"]:
+                Highlight(self, hit.x, hit.y, hit.w, hit.h, f"{hit.score:.0%}")
+
+        self.after(300 if hide else 0, lambda: threading.Thread(target=work, daemon=True).start())
+
+    # ------------------------------------------------------------------ misc
+
+    def _delete_key(self, e):
+        if isinstance(e.widget, tk.Entry):
+            return
+        if self.current == "flow":
+            self.flow_page.delete_selected()
+
+    def close(self):
+        self.runner.stop()
+        self.hotkeys.stop()
+        self._autosave()
+        config.save(self.cfg)
+        self.destroy()
+
+
+def _dark_titlebar(root):
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        value = ctypes.c_int(1)
+        for attr in (20, 19):
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(value),
+                                                          ctypes.sizeof(value)) == 0:
+                break
+    except Exception:
+        pass

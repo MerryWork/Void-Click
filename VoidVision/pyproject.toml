@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voidvision"
+version = "1.0.0"
+description = "Visual macro tool: flows that find images and colours on screen and click them"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = ["pynput>=1.7.6", "Pillow>=9.2", "numpy>=1.21"]
+
+[project.optional-dependencies]
+fast = ["opencv-python>=4.5"]
+
+[project.gui-scripts]
+voidvision = "voidvision.run:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

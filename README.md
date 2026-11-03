@@ -7,6 +7,10 @@ dependencies.
 One window with a dark glass theme and an icon rail for Clicker, Macro, Script
 and Settings.
 
+Looking for macros that see the screen? VoidVision/ in this repository is the
+separate visual-macro app: flows that find an image or colour on screen and
+click it wherever it is. See VoidVision/README.md.
+
 
 INSTALL AND RUN
 
