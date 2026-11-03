@@ -163,6 +163,11 @@ def _close(p):
     p.line((18, 6), (6, 18))
 
 
+def _warn(p):
+    p.line((12, 6), (12, 13.5))
+    p.circle(12, 18, 1.4, fill=True)
+
+
 def _region(p):
     for x1, y1, x2, y2 in ((3, 3, 7, 3), (3, 3, 3, 7), (17, 3, 21, 3), (21, 3, 21, 7),
                            (3, 21, 7, 21), (3, 17, 3, 21), (17, 21, 21, 21), (21, 17, 21, 21)):
@@ -223,7 +228,7 @@ _DRAWERS = {
     "flow": _flow, "images": _images, "gear": _gear, "play": _play, "stop": _stop,
     "plus": _plus, "up": _up, "down": _down, "copy": _copy, "trash": _trash,
     "crosshair": _crosshair, "dropper": _dropper, "eye": _eye, "folder": _folder,
-    "save": _save, "new": _new, "chevron": _chevron, "check": _check, "close": _close,
+    "save": _save, "new": _new, "chevron": _chevron, "check": _check, "close": _close, "warn": _warn,
     "region": _region, "cursor": _cursor, "keyboard": _keyboard, "text": _text,
     "clock": _clock, "scroll": _scroll, "branch": _branch, "bolt": _bolt,
     "palette": _palette, "loop": _loop,

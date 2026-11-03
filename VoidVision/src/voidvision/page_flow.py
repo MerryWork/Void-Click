@@ -4,7 +4,8 @@ import tkinter as tk
 
 from PIL import Image, ImageTk
 
-from . import draw, icons, model, theme
+from . import draw, explain, icons, model, theme
+from .insight import ComparePanel, QualityLine, preview
 from . import widgets as w
 from .model import KINDS, Step
 
@@ -14,18 +15,6 @@ ROW_GAP = 6
 QUICK_ADD = [("click_image", "Find & click"), ("wait_image", "Wait for image"),
              ("if_image", "If visible"), ("click_color", "Find colour"), ("wait", "Wait")]
 MORE_ADD = ["click", "key", "type", "scroll"]
-
-def preview(image, max_w, max_h):
-    """Scale a capture to fit a box; small captures grow with hard pixels."""
-    pic = image.convert("RGB")
-    k = min(max_w / pic.width, max_h / pic.height)
-    if k >= 2:
-        k = int(k)
-        return pic.resize((pic.width * k, pic.height * k), Image.NEAREST)
-    if k < 1:
-        return pic.resize((max(1, int(pic.width * k)), max(1, int(pic.height * k))), Image.LANCZOS)
-    return pic
-
 
 STATUS_COLORS = {"active": theme.ORANGE, "ok": theme.GREEN, "fail": theme.RED,
                  "skip": theme.FG_FAINT}
@@ -90,8 +79,14 @@ class StepRow(tk.Canvas):
         if dim:
             self._pill(width - 16, "OFF", theme.FG_MUTED, theme.BG_FIELD, fill)
         if self.status:
-            draw.circle(self, width - 20 - (44 if dim else 0), ROW_H / 2, 10,
-                        STATUS_COLORS[self.status], None)
+            # Icon + colour, so the state reads without telling colours apart.
+            cx = width - 24 - (44 if dim else 0)
+            color = STATUS_COLORS[self.status]
+            tint = {"ok": theme.GREEN_DIM, "fail": theme.RED_DIM, "active": theme.ORANGE_DIM,
+                    "skip": theme.BG_FIELD}[self.status]
+            draw.circle(self, cx, ROW_H / 2, 22, tint, None)
+            glyph = {"ok": "check", "fail": "close", "active": "play", "skip": "down"}[self.status]
+            self.create_image(cx, ROW_H / 2, image=icons.get(glyph, 13, color, stroke=2.6))
 
     def _pill(self, right, text, fg, bg, behind):
         draw.rrect(self, right - 34, ROW_H / 2 - 10, 34, 20, 10, bg, None, behind)
@@ -369,6 +364,43 @@ class FlowPage(tk.Frame):
         draw.circle(c, 14, 12, 8, fg, None)
         c.create_text(26, 12, text=text, anchor="w", fill=fg, font=theme.font(9, "bold"))
 
+    def on_test_result(self, key):
+        if self.inspector.step is not None and self.inspector.step.id == key:
+            self.inspector.show(self.inspector.step)
+
+    def handle_key(self, e):
+        """Keyboard control of the step list (focus must not be in a text field).
+
+        Up/Down select, Ctrl+Up/Down move, Space enables/disables,
+        Ctrl+D duplicates, T tests the selected step, Delete removes it.
+        """
+        steps = self.app.flow.steps
+        if not steps:
+            return
+        ctrl = bool(e.state & 0x4)
+        i = steps.index(self.selected) if self.selected in steps else 0
+        key = e.keysym
+        if key in ("Up", "Down"):
+            delta = -1 if key == "Up" else 1
+            if ctrl:
+                self.move_selected(delta)
+            else:
+                self.select(steps[min(max(i + delta, 0), len(steps) - 1)])
+            return "break"
+        if key == "Home":
+            self.select(steps[0])
+        elif key == "End":
+            self.select(steps[-1])
+        elif key == "space":
+            self.toggle_enabled(steps[i])
+        elif key.lower() == "d" and ctrl:
+            self.duplicate_selected()
+        elif key.lower() == "t" and not ctrl and steps[i].kind in model.SEARCH_KINDS:
+            self.app.test_step(steps[i])
+        else:
+            return None
+        return "break"
+
     def set_log(self, text):
         self.log_label.configure(text=text)
 
@@ -430,6 +462,8 @@ class Inspector(w.Card):
         fields = scroller.interior
         for key, lbl, ftype, default, opts in KINDS[step.kind]["fields"]:
             self._field(fields, key, lbl, ftype, opts)
+            if ftype in ("template", "color"):
+                self._result_panel(fields)
 
         for icon, tip, cmd in (("up", "Move up", lambda: self.page.move_selected(-1)),
                                ("down", "Move down", lambda: self.page.move_selected(1)),
@@ -454,6 +488,8 @@ class Inspector(w.Card):
         return row
 
     def _commit(self, key, value):
+        if key in ("template", "region", "color", "rgb", "tolerance"):
+            self.app.test_results.pop(self.step.id, None)
         self.step.params[key] = value
         self.page.update_row(self.step)
 
@@ -469,8 +505,14 @@ class Inspector(w.Card):
         row = self._row(parent, lbl)
         if ftype == "percent":
             var = tk.DoubleVar(value=float(value))
-            w.Slider(row, var, opts[0], opts[1], parent_bg=bg, width=170,
-                     on_change=lambda v: self._commit(key, float(var.get()))).pack(side="left")
+            def changed(v, var=var, key=key):
+                self._commit(key, float(var.get()))
+                if self.app.test_results.get(step.id):
+                    self.show(step)   # re-judge the last test against the new setting
+
+            w.Slider(row, var, opts[0], opts[1], parent_bg=bg, width=200,
+                     fmt=lambda v: f"{v:.0%} {explain.strictness(v)}",
+                     on_change=changed).pack(side="left")
         elif ftype in ("float", "int"):
             var = tk.StringVar(value=f"{value:g}" if ftype == "float" else str(value))
 
@@ -563,6 +605,34 @@ class Inspector(w.Card):
         if t:
             w.label(btns, f"{t.size[0]}×{t.size[1]}px", muted=True, size=9,
                     bg=bg).pack(side="left", padx=8)
+            QualityLine(parent, t.image, bg=bg, wrap=290).pack(fill="x", pady=(0, 8))
+        else:
+            w.label(parent, "Click Capture, then drag a box around the thing to find. "
+                            "Include its text or outline - that's what makes it recognisable.",
+                    muted=True, size=9, bg=bg, wraplength=300,
+                    justify="left").pack(anchor="w", pady=(0, 8))
+
+    def _result_panel(self, parent):
+        """The last Test of this step, re-judged against the current settings."""
+        step = self.step
+        result = self.app.test_results.get(step.id)
+        if result is None:
+            return
+        p = result.probe
+        if step.kind == "click_color":
+            target = Image.new("RGB", (24, 24), tuple(step.get("rgb")))
+            verdict = explain.color_result(p.hit is not None)
+            need = None
+        else:
+            t = self.app.flow.template_for(step)
+            if t is None:
+                return
+            target = t.image
+            need = float(step.get("confidence"))
+            verdict = explain.test_result(p.score, need, p.score >= need, p.elapsed_ms)
+        shown = type(result)(p, verdict, need)
+        ComparePanel(parent, target, shown, bg=theme.BG_CARD, width=300).pack(fill="x",
+                                                                             pady=(2, 10))
 
     def capture_template(self):
         step = self.step

@@ -6,17 +6,24 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from . import config, draw, icons, matcher, model, theme
+from . import config, draw, explain, icons, model, theme
 from . import widgets as w
 from .overlay import CaptureOverlay, Highlight
 from .page_flow import FlowPage
 from .page_images import ImagesPage
 from .page_settings import SettingsPage
-from .runner import Runner, look_once
+from .runner import Runner, probe
 from .screen import ScreenBackend, virtual_screen
 
 APP_NAME = "Void Vision"
 FILE_TYPES = [("Void Vision flow", "*.vflow"), ("All files", "*.*")]
+
+class TestResult:
+    """The last Test of a step or library image, kept so panels can show it."""
+
+    def __init__(self, probe, verdict, confidence):
+        self.probe, self.verdict, self.confidence = probe, verdict, confidence
+
 
 NAV = [("flow", "flow", "Flow"), ("images", "images", "Images"), ("settings", "gear", "Settings")]
 
@@ -71,6 +78,7 @@ class MainWindow(tk.Tk):
         self.path = None
         self.dirty = False
         self._busy = False   # a capture/test is in progress
+        self.test_results = {}   # step id / "tpl:<id>" -> TestResult
         self._load_initial()
 
         self._build()
@@ -80,6 +88,9 @@ class MainWindow(tk.Tk):
         self.bind_all("<Control-s>", lambda e: self.save_flow())
         self.bind_all("<Control-o>", lambda e: self.open_flow())
         self.bind_all("<Delete>", self._delete_key)
+        for seq in ("<Up>", "<Down>", "<Control-Up>", "<Control-Down>", "<Home>", "<End>",
+                    "<space>", "<Control-d>", "<t>"):
+            self.bind_all(seq, self._list_key)
 
     # ------------------------------------------------------------------ build
 
@@ -308,14 +319,15 @@ class MainWindow(tk.Tk):
         self.capture("image", done)
 
     def check_capture(self, image):
-        """Warn about captures that will match badly. Returns False to reject."""
+        """Reject unusable captures and warn, in words, about weak ones."""
         if image is None:
             return False
         if min(image.size) < 6:
-            self.toast("Too small — drag a box at least 6 px each way", "warn")
+            self.toast("Too small \u2014 drag a box at least 6 px each way", "warn")
             return False
-        if matcher.to_gray(matcher.as_rgb(image)).std() < matcher.FLAT_STD:
-            self.toast("That's one flat colour — Find colour suits it better", "warn")
+        verdict = explain.image_quality(image)
+        if verdict.level != explain.GOOD:
+            self.toast(f"{verdict.title} \u2014 see the tips under the image", "warn")
         return True
 
     def capture(self, mode, on_done):
@@ -350,53 +362,62 @@ class MainWindow(tk.Tk):
         if step.kind in model.IMAGE_KINDS and self.flow.template_for(step) is None:
             self.toast("Capture an image for this step first", "warn")
             return
-        self._probe(lambda: look_once(self.backend, self.flow, step),
-                    float(step.get("confidence") or 0) if step.kind != "click_color" else None)
+        self._probe(step, step.id)
 
     def test_template(self, template):
-        probe = model.Step.create("click_image", template=template.id,
-                                  confidence=float(self.cfg["default_confidence"]))
-        self.test_step_with(probe)
+        step = model.Step.create("click_image", template=template.id,
+                                 confidence=float(self.cfg["default_confidence"]))
+        self._probe(step, "tpl:" + template.id)
 
-    def test_step_with(self, step):
-        flow = self.flow
-        self._probe(lambda: look_once(self.backend, flow, step), float(step.get("confidence")))
-
-    def _probe(self, search, confidence):
+    def _probe(self, step, key):
+        """Look once, then explain the result in the panel that asked."""
         if self._busy or self.runner.running:
             return
         self._busy = True
         hide = self.cfg["hide_while_running"]
         if hide:
             self.withdraw()
+        flow = self.flow
+        is_color = step.kind == "click_color"
+        confidence = None if is_color else float(step.get("confidence"))
 
         def work():
             try:
-                result = search()
-                error = None
+                result, error = probe(self.backend, flow, step), None
             except Exception as exc:
-                result, error = (None, 0.0), exc
+                result, error = None, exc
             self.after(0, finish, result, error)
 
         def finish(result, error):
             self._busy = False
-            hit, best = result
             if hide:
                 self.deiconify()
             if error is not None:
                 self.toast(f"Test failed: {error}", "error")
                 return
-            if hit is None:
-                need = f" (needs {confidence:.0%})" if confidence else ""
-                self.toast(f"Not found — best match {best:.0%}{need}", "warn")
-                return
-            self.toast(f"Found — {hit.score:.0%} match in {hit.elapsed_ms:.0f} ms", "ok")
-            if self.cfg["highlight_tests"]:
+            if is_color:
+                verdict = explain.color_result(result.hit is not None)
+            else:
+                verdict = explain.test_result(result.score, confidence, result.hit is not None,
+                                              result.elapsed_ms)
+            self.test_results[key] = TestResult(result, verdict, confidence)
+            kind = {"good": "ok", "ok": "warn", "weak": "error"}[verdict.level]
+            self.toast(verdict.title, kind)
+            hit = result.hit
+            if hit is not None and self.cfg["highlight_tests"]:
                 Highlight(self, hit.x, hit.y, hit.w, hit.h, f"{hit.score:.0%}")
+            self.flow_page.on_test_result(key)
+            self.images_page.on_test_result(key)
 
         self.after(300 if hide else 0, lambda: threading.Thread(target=work, daemon=True).start())
 
     # ------------------------------------------------------------------ misc
+
+    def _list_key(self, e):
+        # Typing in a field (or using a dropdown) keeps its normal keys.
+        if isinstance(e.widget, (tk.Entry, tk.Menu)) or self.current != "flow":
+            return None
+        return self.flow_page.handle_key(e)
 
     def _delete_key(self, e):
         if isinstance(e.widget, tk.Entry):

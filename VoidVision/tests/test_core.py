@@ -495,6 +495,63 @@ class RunnerTests(unittest.TestCase):
         self.assertLess(best, 0.85)
 
 
+class ExplainTests(unittest.TestCase):
+    """The plain-language wording people see about images and test results."""
+
+    def test_strictness_words(self):
+        from voidvision import explain
+        self.assertEqual(explain.strictness(0.6), "Loose")
+        self.assertEqual(explain.strictness(0.85), "Balanced")
+        self.assertEqual(explain.strictness(0.92), "Strict")
+        self.assertEqual(explain.strictness(1.0), "Exact")
+
+    def test_image_quality_levels(self):
+        from voidvision import explain
+        self.assertEqual(explain.image_quality(button("Claim", (45, 108, 223))).level, explain.GOOD)
+        flat = explain.image_quality(Image.new("RGB", (60, 30), (255, 157, 69)))
+        self.assertEqual((flat.level, flat.title), (explain.WEAK, "One flat colour"))
+        self.assertIn("Find colour", flat.detail)
+        tiny = explain.image_quality(button("", (9, 9, 9), (5, 5)))
+        self.assertEqual(tiny.title, "Very small")
+        # A soft gradient: has variation but no edges or text.
+        grad = Image.linear_gradient("L").resize((80, 40)).convert("RGB")
+        self.assertEqual(explain.image_quality(grad).title, "Low detail")
+        big = Image.fromarray(noise(400, 600))
+        self.assertEqual(explain.image_quality(big).title, "Large")
+
+    def test_test_result_wording(self):
+        from voidvision import explain
+        v = explain.test_result(0.99, 0.85, True, 120)
+        self.assertEqual(v.level, explain.GOOD)
+        self.assertIn("120 ms", v.detail)
+        self.assertEqual(explain.test_result(0.9, 0.85, True).title, "Found")
+        almost = explain.test_result(0.79, 0.85, False)
+        self.assertEqual(almost.level, explain.OK)
+        self.assertIn("lower Match to 77%", almost.detail)   # a concrete, working number
+        self.assertLess(0.77, 0.79)
+        gone = explain.test_result(0.3, 0.85, False)
+        self.assertEqual((gone.level, gone.title), (explain.WEAK, "Not on screen"))
+        self.assertEqual(explain.color_result(False).level, explain.WEAK)
+
+    def test_probe_keeps_closest_spot_when_too_weak(self):
+        from voidvision.runner import probe
+        screen = desktop()
+        claim = button("Claim", (45, 108, 223))
+        screen.paste(claim, (300, 200))
+        flow = Flow()
+        t = flow.add_template(claim)
+        step = Step.create("click_image", template=t.id, confidence=0.85)
+        p = probe(FakeBackend(screen), flow, step)
+        self.assertIsNotNone(p.hit)
+        self.assertEqual(p.closest.size, claim.size)
+        # Demand more than is possible: not "found", but we still see where it looked.
+        step.params["confidence"] = 1.01
+        p = probe(FakeBackend(screen), flow, step)
+        self.assertIsNone(p.hit)
+        self.assertGreater(p.score, 0.99)
+        self.assertEqual(p.closest.tobytes(), claim.tobytes())
+
+
 class ScreenBackendTests(unittest.TestCase):
     def test_region_crop_keeps_retina_scale(self):
         from unittest import mock

@@ -128,6 +128,13 @@ outright - see Settings.
 
 TESTS
 
+Run every suite in this repository - Void Click first, then Void Vision - with:
+
+    py run_tests.py
+
+See TESTING.md for setup, options and how to read the result. Void Click's own
+suite on its own:
+
     py tests/test_core.py
 
 196 assertions covering click timing, limits and jitter, macro round-trips,

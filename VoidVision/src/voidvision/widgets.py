@@ -341,7 +341,8 @@ class Slider(tk.Canvas):
 
     def _track(self):
         w = max(self.winfo_width(), int(self["width"]))
-        return 8, w - 56
+        # Leave room for a worded value such as "85% Balanced".
+        return 8, w - (96 if callable(self.fmt) else 56)
 
     def _draw(self):
         self.delete("all")
@@ -356,8 +357,9 @@ class Slider(tk.Canvas):
         if kx - x0 > 1:
             draw.rrect(self, x0, 11, kx - x0, 4, 2, theme.GREEN, None, self.bg)
         draw.circle(self, kx, 13, 14, theme.FG, None)
-        self.create_text(x1 + 12, 13, text=self.fmt.format(v), anchor="w", fill=theme.FG,
-                         font=theme.font(10, "bold"))
+        text = self.fmt(v) if callable(self.fmt) else self.fmt.format(v)
+        self.create_text(x1 + 10, 13, text=text, anchor="w", fill=theme.FG,
+                         font=theme.font(9, "bold"))
 
     def _drag(self, e):
         x0, x1 = self._track()
@@ -588,9 +590,9 @@ def section(master, text, bg=None):
 
 def label(master, text, muted=False, size=10, bold=False, bg=None, **kw):
     kw.setdefault("anchor", "w")
-    return tk.Label(master, text=text, bg=bg or _parent_bg(master),
-                    fg=theme.FG_MUTED if muted else theme.FG,
-                    font=theme.font(size, "bold" if bold else "normal"), **kw)
+    kw.setdefault("fg", theme.FG_MUTED if muted else theme.FG)
+    kw.setdefault("font", theme.font(size, "bold" if bold else "normal"))
+    return tk.Label(master, text=text, bg=bg or _parent_bg(master), **kw)
 
 
 class Swatch(tk.Canvas):

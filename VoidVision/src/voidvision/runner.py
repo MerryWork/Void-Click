@@ -38,26 +38,45 @@ def _safe(cb, *args):
         traceback.print_exc()
 
 
-def look_once(backend, flow, step):
-    """One search for an image/colour step. Returns (Hit or None, best score)."""
+@dataclass
+class Probe:
+    """Everything one look at the screen found - used to explain Test results."""
+    hit: object            # Hit when it counts as found, else None
+    score: float           # best similarity anywhere (0..1)
+    closest: object        # PIL crop of the best-scoring spot, even if too weak
+    elapsed_ms: float
+
+
+def probe(backend, flow, step):
+    """One search for an image/colour step, keeping the closest spot."""
     region = step.get("region")
     shot = backend.grab(tuple(region) if region else None)
     if step.kind == "click_color":
         m = matcher.find_color(shot.image, step.get("rgb"), int(step.get("tolerance")))
         score = 1.0 if m else 0.0
+        found = m is not None
     else:
         template = flow.template_for(step)
         if template is None:
-            return None, 0.0
+            return Probe(None, 0.0, None, 0.0)
         m = matcher.best(shot.image, template.image, color=bool(step.get("color")))
         score = m.score if m else 0.0
-        if m is not None and m.score < float(step.get("confidence")):
-            return None, score
+        found = m is not None and m.score >= float(step.get("confidence"))
     if m is None:
-        return None, score
-    x, y = shot.to_screen(m.x, m.y)
-    w, h = shot.size_on_screen(m.w, m.h)
-    return Hit(x, y, w, h, m.score, m.elapsed_ms), score
+        return Probe(None, score, None, 0.0)
+    closest = shot.image.crop((m.x, m.y, m.x + m.w, m.y + m.h))
+    hit = None
+    if found:
+        x, y = shot.to_screen(m.x, m.y)
+        w, h = shot.size_on_screen(m.w, m.h)
+        hit = Hit(x, y, w, h, m.score, m.elapsed_ms)
+    return Probe(hit, max(score, 0.0), closest, m.elapsed_ms)
+
+
+def look_once(backend, flow, step):
+    """One search for an image/colour step. Returns (Hit or None, best score)."""
+    p = probe(backend, flow, step)
+    return p.hit, p.score
 
 
 class Runner:

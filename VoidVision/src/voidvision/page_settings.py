@@ -2,7 +2,7 @@
 
 import tkinter as tk
 
-from . import __version__, matcher, theme
+from . import __version__, explain, matcher, theme
 from . import widgets as w
 
 
@@ -68,7 +68,8 @@ class SettingsPage(tk.Frame):
         ma = self._card(inner, "Matching", "Defaults for new steps.")
         row = self._row(ma, "Default match", "Lower finds more, but may find the wrong thing")
         conf = tk.DoubleVar(value=cfg["default_confidence"])
-        w.Slider(row, conf, 0.5, 1.0, parent_bg=theme.BG_CARD, width=200,
+        w.Slider(row, conf, 0.5, 1.0, parent_bg=theme.BG_CARD, width=240,
+                 fmt=lambda v: f"{v:.0%} {explain.strictness(v)}",
                  on_change=lambda v: self._set("default_confidence", round(float(conf.get()), 2))
                  ).pack(side="right")
         row = self._row(ma, "Re-check every (ms)", "How often a waiting step looks again")
@@ -84,6 +85,19 @@ class SettingsPage(tk.Frame):
 
         w.Entry(row, poll, width=6, on_commit=set_poll, parent_bg=theme.BG_CARD,
                 justify="center").pack(side="right")
+
+        kb = self._card(inner, "Keyboard", "On the Flow page, when you're not typing in a field.")
+        for keys, what in (("\u2191 / \u2193", "Select the previous / next step"),
+                           ("Ctrl + \u2191 / \u2193", "Move the selected step up / down"),
+                           ("Space", "Turn the selected step on or off"),
+                           ("T", "Test the selected image or colour step"),
+                           ("Ctrl + D", "Duplicate the selected step"),
+                           ("Delete", "Delete the selected step"),
+                           ("Ctrl + S  /  Ctrl + O", "Save / open a flow")):
+            row = tk.Frame(kb, bg=theme.BG_CARD)
+            row.pack(fill="x", pady=2)
+            w.label(row, keys, bg=theme.BG_CARD, width=20, font=theme.mono(10)).pack(side="left")
+            w.label(row, what, muted=True, bg=theme.BG_CARD).pack(side="left")
 
         ab = self._card(inner, "About", f"Void Vision {__version__}")
         accel = "OpenCV (fast)" if matcher.cv2 is not None else "NumPy  ·  pip install opencv-python for faster matching"

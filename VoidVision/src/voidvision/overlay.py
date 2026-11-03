@@ -17,7 +17,7 @@ MODE_REGION = "region"
 MODE_COLOR = "color"
 
 _HINTS = {
-    MODE_IMAGE: "Drag around what to find  ·  Esc to cancel",
+    MODE_IMAGE: "Drag around what to find - include its text or outline  ·  Esc to cancel",
     MODE_REGION: "Drag out the area to search in  ·  Esc to cancel",
     MODE_COLOR: "Click the colour to look for  ·  Esc to cancel",
 }
@@ -72,7 +72,7 @@ class CaptureOverlay(tk.Toplevel):
         c = self.canvas
         text = _HINTS[self.mode]
         x = self.sw / 2
-        c.create_rectangle(x - 230, 18, x + 230, 52, fill=theme.BG_RAISED, outline=theme.GREEN,
+        c.create_rectangle(x - 300, 18, x + 300, 52, fill=theme.BG_RAISED, outline=theme.GREEN,
                            tags="hint")
         c.create_text(x, 35, text=text, fill=theme.FG, font=theme.font(11, "bold"), tags="hint")
 

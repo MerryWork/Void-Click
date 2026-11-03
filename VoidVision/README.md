@@ -7,7 +7,7 @@ now. Flows keep working when windows move, resize or open somewhere new.
 
 Same dark-glass look as Void Click, rebuilt sharper: anti-aliased shapes,
 hairline borders and crisp line icons, all drawn by Pillow. Screenshots:
-docs/flow.png and docs/images.png.
+docs/flow.png, docs/test-result.png and docs/images.png.
 
 
 INSTALL AND RUN
@@ -47,6 +47,27 @@ HOW IT WORKS
 
 Because you select on a frozen screenshot, you can capture hover states,
 tooltips and menus that would vanish the moment the mouse moved.
+
+
+UNDERSTANDING IMAGES
+
+Void Vision explains what it sees in plain words, so you don't have to guess
+what a number like 0.81 means.
+
+- Every captured image gets a rating under it: "Good image", "Low detail",
+  "Large", "Very small" or "One flat colour". Each comes with a sentence
+  saying why and what to do about it. A weak capture also gets a warning
+  the moment you make it.
+- Test shows the result in words first ("Found", "Almost - just under your
+  setting", "Not on screen"), then the evidence: your image beside what it
+  found on screen. If it found nothing good enough, you see the closest
+  spot instead. A similarity bar shows the score, with a tick marking what
+  the step needs. When a match is close, it gives a working number, e.g.
+  "lower Match to 77%".
+- The Match slider reads as a word as well as a percentage: Loose,
+  Balanced, Strict or Exact.
+- Changing the Match setting re-judges the last test straight away, so you
+  can see whether the step would now succeed without testing again.
 
 
 STEPS
@@ -95,6 +116,20 @@ recapture, test or delete them, or import PNG/JPG files. A flow file
 all you need to share a flow.
 
 
+ACCESSIBILITY
+
+- Status is never shown by colour alone. Run results in the step list carry
+  a check, a cross or an arrow, and every verdict has an icon and a title.
+- Secondary text meets WCAG AA contrast (about 6:1) on the dark surfaces.
+- Icon-only buttons have tooltips.
+- The step list works from the keyboard: Up/Down select, Ctrl+Up/Down move,
+  Space turns a step on or off, T tests it, Ctrl+D duplicates, Delete
+  removes. Settings > Keyboard lists them all.
+- Known limit: Tk, the toolkit the app is built on, exposes little to
+  screen readers. Labels are real text, but a screen reader won't announce
+  the custom-drawn controls.
+
+
 HOTKEYS
 
 Global, configurable in Settings:
@@ -140,7 +175,10 @@ TESTS
 
     python tests/test_core.py
 
-Covers the matcher (exact, downscaled, brightness-shifted, colour-strict,
+Or run every suite in the repository, Void Click included, from the root
+with `python run_tests.py` (see ../TESTING.md).
+
+Covers the plain-language image and test explanations, the matcher (exact, downscaled, brightness-shifted, colour-strict,
 flat, multi-match, colour search), the flow file round trip, every runner
 rule (offsets, actions, Retina scale and desktop origin, search areas, the
 three failure policies, wait-appear/vanish, if-visible skipping, loops, stop,

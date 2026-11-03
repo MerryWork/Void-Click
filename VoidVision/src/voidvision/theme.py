@@ -20,8 +20,8 @@ BORDER_STRONG = "#2f3644"  # hairlines on inputs
 
 FG = "#f1f3f7"
 FG_SOFT = "#c3c8d2"
-FG_MUTED = "#7d8596"
-FG_FAINT = "#555d6d"
+FG_MUTED = "#8f97a8"     # ~6:1 on cards (WCAG AA for body text)
+FG_FAINT = "#6b7385"     # ~3.6:1 - only for disabled / decorative text
 
 GREEN = "#3ddc84"
 GREEN_HOVER = "#5ae597"

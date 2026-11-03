@@ -7,7 +7,7 @@ from PIL import Image, ImageTk
 
 from . import draw, icons, theme
 from . import widgets as w
-from .page_flow import preview
+from .insight import ComparePanel, QualityLine, preview
 
 TILE_W, TILE_H = 150, 150
 COLS = 3
@@ -79,8 +79,11 @@ class ImagesPage(tk.Frame):
         self.scroll = w.ScrollFrame(body)
         self.scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         self.grid_frame = self.scroll.interior
-        self.detail = w.Card(body, padding=16, parent_bg=theme.BG, width=300).fixed()
+        self.detail = w.Card(body, padding=16, parent_bg=theme.BG, width=310).fixed()
         self.detail.grid(row=0, column=1, sticky="nsew")
+        detail_scroll = w.ScrollFrame(self.detail.body, bg=theme.BG_CARD)
+        detail_scroll.pack(fill="both", expand=True)
+        self.detail_inner = detail_scroll.interior
 
     def refresh(self):
         flow = self.app.flow
@@ -124,7 +127,7 @@ class ImagesPage(tk.Frame):
         self._show_detail()
 
     def _show_detail(self):
-        b = self.detail.body
+        b = self.detail_inner
         for child in b.winfo_children():
             child.destroy()
         t = self.selected
@@ -132,11 +135,11 @@ class ImagesPage(tk.Frame):
         if t is None:
             w.label(b, "Nothing selected", bold=True, bg=bg).pack(anchor="w")
             return
-        pv = tk.Canvas(b, width=268, height=170, bg=bg, highlightthickness=0)
+        pv = tk.Canvas(b, width=256, height=140, bg=bg, highlightthickness=0)
         pv.pack()
-        draw.rrect(pv, 0, 0, 268, 170, 8, theme.BG_FIELD, theme.BORDER_STRONG, bg)
-        self._preview = ImageTk.PhotoImage(preview(t.image, 250, 150))
-        pv.create_image(134, 85, image=self._preview)
+        draw.rrect(pv, 0, 0, 256, 140, 8, theme.BG_FIELD, theme.BORDER_STRONG, bg)
+        self._preview = ImageTk.PhotoImage(preview(t.image, 240, 124))
+        pv.create_image(128, 70, image=self._preview)
 
         w.section(b, "Name", bg=bg).pack(anchor="w", pady=(16, 4))
         name = tk.StringVar(value=t.name)
@@ -154,6 +157,10 @@ class ImagesPage(tk.Frame):
         w.label(b, f"{t.size[0]} × {t.size[1]} px  ·  used by {uses} step"
                    f"{'s' if uses != 1 else ''}", muted=True, size=9, bg=bg).pack(anchor="w",
                                                                                   pady=(10, 0))
+        QualityLine(b, t.image, bg=bg, wrap=230).pack(fill="x", pady=(12, 0))
+        result = self.app.test_results.get("tpl:" + t.id)
+        if result is not None:
+            ComparePanel(b, t.image, result, bg=bg, width=256).pack(fill="x", pady=(14, 0))
         btns = tk.Frame(b, bg=bg)
         btns.pack(fill="x", pady=(16, 0))
         w.Button(btns, text="Find on screen", icon="eye", variant="secondary", parent_bg=bg,
@@ -162,6 +169,10 @@ class ImagesPage(tk.Frame):
                  command=lambda: self._recapture(t)).pack(side="left", padx=6)
         w.Button(b, text="Delete image", icon="trash", variant="danger", parent_bg=bg,
                  command=lambda: self._delete(t)).pack(anchor="w", pady=(10, 0))
+
+    def on_test_result(self, key):
+        if self.selected is not None and key == "tpl:" + self.selected.id:
+            self._show_detail()
 
     def _capture(self):
         def done(image):
@@ -175,6 +186,7 @@ class ImagesPage(tk.Frame):
         def done(image):
             if image is not None:
                 t.image = image.convert("RGB")
+                self.app.test_results.pop("tpl:" + t.id, None)
                 self.app.mark_dirty()
                 self.app.on_library_changed()
         self.app.capture("image", done)
