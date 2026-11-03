@@ -6,12 +6,16 @@ mid-game while movement keys are down.
 """
 
 import threading
+import time
 import traceback
+
+CLICK_DEBOUNCE = 0.35   # seconds after Record during which a left click is ignored
 
 MODIFIERS = ("ctrl", "alt", "shift", "cmd")
 _ORDER = {m: i for i, m in enumerate(MODIFIERS)}
 _FRIENDLY = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "cmd": "Cmd",
              "mouse_x1": "Mouse 4", "mouse_x2": "Mouse 5", "mouse_middle": "Middle Click",
+             "mouse_left": "Left Click", "mouse_right": "Right Click",
              "space": "Space", "esc": "Esc", "enter": "Enter", "tab": "Tab"}
 
 
@@ -41,6 +45,8 @@ class HotkeyManager:
         self._held = set()
         self._by_vk = {}
         self._capture = None
+        self._capture_left = False
+        self._capture_since = 0.0
         self._lock = threading.Lock()
         self._listeners = []
 
@@ -76,9 +82,16 @@ class HotkeyManager:
             else:
                 self._hotkeys.pop(name, None)
 
-    def capture_next(self, callback):
-        """callback(combo) on the next non-modifier key or side button."""
+    def capture_next(self, callback, allow_left_click=False):
+        """callback(combo) on the next non-modifier key or mouse button.
+
+        Hotkeys refuse a bare left click (it would fire on every click), but
+        a step's *action* may well be a left click - pass allow_left_click.
+        The click that pressed the Record button itself is ignored.
+        """
         self._capture = callback
+        self._capture_left = allow_left_click
+        self._capture_since = time.monotonic()
 
     def cancel_capture(self):
         self._capture = None
@@ -105,7 +118,10 @@ class HotkeyManager:
                 self._held.add(token)
                 return
             if token == "mouse_left":
-                return
+                too_soon = time.monotonic() - self._capture_since < CLICK_DEBOUNCE
+                has_mod = bool(self._held & set(MODIFIERS))
+                if too_soon or not (self._capture_left or has_mod):
+                    return
             self._capture = None
             combo = normalize((self._held & set(MODIFIERS)) | {token})
             try:

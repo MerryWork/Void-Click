@@ -79,9 +79,9 @@ KINDS = {
                    ("interval", "Gap (ms)", "int", 60, None)],
     },
     "key": {
-        "label": "Key",
+        "label": "Key / click",
         "group": "input",
-        "fields": [("combo", "Key or combo", "key", "enter", None),
+        "fields": [("combo", "Key or click", "key", "enter", None),
                    ("hold_ms", "Hold (ms)", "int", 0, None)],
     },
     "type": {
@@ -103,6 +103,9 @@ KINDS = {
         "label": "Hit the spot",
         "group": "vision",
         "fields": [("region", "Bar area", "region", None, None),
+                   # Up top so it's visible without scrolling: a key or a
+                   # mouse button (Record catches either).
+                   ("combo", "Then press", "key", "space", None),
                    # Defaults match the common meter: a black line sweeping
                    # over a bar, pressed when it's on a red block.
                    ("marker_rgb", "Marker colour", "color", [0, 0, 0], None),
@@ -110,7 +113,6 @@ KINDS = {
                    ("zone", "Spot", "zone", [0.45, 0.55], None),
                    ("zone_rgb", "Spot colour", "color", [215, 7, 7], None),
                    ("tolerance", "Colour range", "int", 40, None),
-                   ("combo", "Then press", "key", "space", None),
                    ("lead_ms", "Press early (ms)", "int", 25, None),
                    ("timeout", "Timeout (s)", "float", 10.0, None),
                    ("on_fail", "If it never lines up", "choice", "stop", ON_FAIL)],
@@ -332,7 +334,7 @@ def summary(step, flow):
         return f"{p('button').title()} click{' x%d' % n if n != 1 else ''} where the cursor is"
     if k == "key":
         hold = f" · hold {p('hold_ms')}ms" if p("hold_ms") else ""
-        return f"Press {format_combo(p('combo'))}{hold}"
+        return f"{action_phrase(p('combo'))}{hold}"
     if k == "type":
         text = str(p("text"))
         short = text[:34] + ("…" if len(text) > 34 else "")
@@ -350,12 +352,26 @@ def summary(step, flow):
             z0, z1 = p("zone")
             spot = f"{z0:.0%}\u2013{z1:.0%}"
         where = "" if p("region") else " \u00b7 set the bar area"
-        return f"Press {format_combo(p('combo'))} when the marker hits {spot}{where}"
+        return f"{action_phrase(p('combo'))} when the marker hits {spot}{where}"
     return k
+
+
+MOUSE_NAMES = {"mouse_left": "Left click", "mouse_right": "Right click",
+               "mouse_middle": "Middle click", "mouse_x1": "Mouse 4", "mouse_x2": "Mouse 5"}
+
+
+def is_mouse(combo):
+    return any(p in MOUSE_NAMES for p in str(combo or "").split("+"))
 
 
 def format_combo(combo):
     if not combo:
         return "(none)"
-    return " + ".join(part.upper() if len(part) <= 1 else part.title()
+    return " + ".join(MOUSE_NAMES.get(part) or (part.upper() if len(part) <= 1 else part.title())
                       for part in str(combo).split("+"))
+
+
+def action_phrase(combo):
+    """'Press Ctrl + S' for keys, 'Left click' / 'Ctrl + Left click' for mouse."""
+    text = format_combo(combo)
+    return text if is_mouse(combo) else "Press " + text

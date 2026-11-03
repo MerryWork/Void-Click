@@ -41,8 +41,9 @@ class PracticeBar(tk.Toplevel):
         body = tk.Frame(self, bg=theme.BG)
         body.pack(padx=18, pady=16)
         w.label(body, "Practice bar", size=13, bold=True).pack(anchor="w")
-        w.label(body, "Press any key when the black line is on the red block - or let a "
-                      "Hit the spot step do it. Keep this window focused so it hears the key.",
+        w.label(body, "Press any key - or click the bar - when the black line is on the red "
+                      "block, or let a Hit the spot step do it. For key steps keep this window "
+                      "focused; for click steps leave the mouse pointer over the bar.",
                 muted=True, size=9, wraplength=BAR_W, justify="left").pack(anchor="w",
                                                                          pady=(2, 10))
         # The bar sits on its own plain background, like a game HUD would.
@@ -66,6 +67,9 @@ class PracticeBar(tk.Toplevel):
                      command=self._use).pack(side="right")
 
         self.bind("<KeyPress>", self._key)
+        # Clicks on the bar count too, for steps whose action is a click.
+        for seq in ("<ButtonPress-1>", "<ButtonPress-2>", "<ButtonPress-3>"):
+            self.canvas.bind(seq, self._key)
         self.after(16, self._tick)
         self.focus_force()
 

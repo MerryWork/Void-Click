@@ -654,18 +654,36 @@ class Inspector(w.Card):
                     on_commit=lambda: self._commit(key, var.get().strip().lower()),
                     parent_bg=bg).pack(side="left")
 
-            def record(var=var):
-                rec.configure_button(text="Press…", variant="running")
+            def got(combo, var=var):
+                var.set(combo)
+                self._commit(key, combo)
+                rec.configure_button(text="Record", variant="secondary")
+                shown.configure(text=model.format_combo(combo))
 
-                def got(combo):
-                    var.set(combo)
-                    self._commit(key, combo)
-                    rec.configure_button(text="Record", variant="secondary")
-                self.app.hotkeys.capture_next(lambda c: self.after(0, got, c))
+            def record():
+                rec.configure_button(text="Press\u2026", variant="running")
+                shown.configure(text="Press a key or click a mouse button")
+                # Mouse buttons count here - including a plain left click -
+                # because this is what the step will do, not a hotkey.
+                self.app.hotkeys.capture_next(lambda c: self.after(0, got, c),
+                                              allow_left_click=True)
+
+            def mouse_menu():
+                m = tk.Menu(self, tearoff=False)
+                for token, name in model.MOUSE_NAMES.items():
+                    m.add_command(label="  " + name + "  ", command=lambda t=token: got(t))
+                m.tk_popup(more.winfo_rootx(), more.winfo_rooty() + more.winfo_height() + 2)
 
             rec = w.Button(row, text="Record", variant="secondary", parent_bg=bg, height=30,
-                           font=theme.font(9), command=record)
+                           font=theme.font(9), command=record,
+                           tooltip="Press a key, or click a mouse button")
             rec.pack(side="left", padx=(6, 0))
+            more = w.Button(row, icon="cursor", variant="ghost", parent_bg=bg, height=30,
+                            icon_size=14, tooltip="Choose a mouse button", command=mouse_menu)
+            more.pack(side="left", padx=(2, 0))
+            shown = w.label(parent, model.format_combo(value), muted=True, size=9,
+                            bg=bg)
+            shown.pack(anchor="w", padx=(118, 0))
         elif ftype == "region":
             self._region_field(row, key)
         elif ftype == "color":

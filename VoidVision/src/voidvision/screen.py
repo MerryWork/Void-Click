@@ -146,12 +146,22 @@ class ScreenBackend:
         m.scroll(0, amount)
 
     def press_combo(self, combo, hold_ms=0):
-        _, kb = self._ctl()
-        keys = [_to_key(part) for part in str(combo).split("+") if part]
+        """Press a key, a mouse button, or either with modifiers held.
+
+        e.g. "space", "ctrl+s", "mouse_left", "shift+mouse_right".
+        """
+        m, kb = self._ctl()
+        parts = [p for p in str(combo).split("+") if p]
+        buttons = [_to_button(p) for p in parts if p.strip().lower().startswith("mouse_")]
+        keys = [_to_key(p) for p in parts if not p.strip().lower().startswith("mouse_")]
         for k in keys:
             kb.press(k)
+        for b in buttons:
+            m.press(b)
         if hold_ms:
             time.sleep(hold_ms / 1000.0)
+        for b in reversed(buttons):
+            m.release(b)
         for k in reversed(keys):
             kb.release(k)
 
@@ -163,6 +173,18 @@ class ScreenBackend:
 _ALIASES = {"control": "ctrl", "option": "alt", "win": "cmd", "super": "cmd", "command": "cmd",
             "return": "enter", "escape": "esc", "del": "delete", "pgup": "page_up",
             "pgdn": "page_down", "spacebar": "space"}
+
+
+def _to_button(name):
+    from pynput.mouse import Button
+
+    token = name.strip().lower()[len("mouse_"):]
+    for attr in {"left": ["left"], "right": ["right"], "middle": ["middle"],
+                 "x1": ["x1", "button8"], "x2": ["x2", "button9"]}.get(token, [token]):
+        button = getattr(Button, attr, None)
+        if button is not None:
+            return button
+    raise ValueError(f"unknown mouse button: {name!r}")
 
 
 def _to_key(name):

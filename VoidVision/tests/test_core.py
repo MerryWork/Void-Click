@@ -982,6 +982,73 @@ class HotkeyAndConfigTests(unittest.TestCase):
         m._press("g")
         self.assertEqual(got, ["shift+g"])
 
+    def test_capture_can_take_a_left_click_for_actions(self):
+        import time as _t
+        m = hotkeys.HotkeyManager()
+        got = []
+        m.capture_next(got.append)              # hotkey capture: bare left refused
+        m._capture_since -= 1
+        m._press("mouse_left")
+        self.assertEqual(got, [])
+        m._press("mouse_right")
+        self.assertEqual(got, ["mouse_right"])
+
+        got.clear()
+        m.capture_next(got.append, allow_left_click=True)
+        m._press("mouse_left")                  # the click on Record itself: ignored
+        self.assertEqual(got, [])
+        m._capture_since = _t.monotonic() - 1
+        m._press("mouse_left")
+        self.assertEqual(got, ["mouse_left"])
+
+        got.clear()
+        m._held.clear()
+        m.capture_next(got.append, allow_left_click=True)
+        m._capture_since -= 1
+        m._press("ctrl")
+        m._press("mouse_left")
+        self.assertEqual(got, ["ctrl+mouse_left"])
+
+    def test_mouse_actions_read_well(self):
+        self.assertEqual(model.format_combo("mouse_left"), "Left click")
+        self.assertEqual(model.action_phrase("mouse_left"), "Left click")
+        self.assertEqual(model.action_phrase("ctrl+mouse_right"), "Ctrl + Right click")
+        self.assertEqual(model.action_phrase("space"), "Press Space")
+        flow = Flow()
+        step = Step.create("timing", combo="mouse_left", region=[0, 0, 10, 10])
+        self.assertTrue(model.summary(step, flow).startswith("Left click when the marker hits"))
+        self.assertEqual(model.summary(Step.create("key", combo="mouse_x1"), flow), "Mouse 4")
+
+    def test_backend_performs_mouse_and_key_combos(self):
+        from unittest import mock
+
+        try:  # pynput needs a display to load on Linux; run_tests.py provides one
+            from pynput.keyboard import Key
+            from pynput.mouse import Button
+        except Exception as exc:
+            self.skipTest(f"pynput unavailable here: {exc}")
+
+        from voidvision.screen import ScreenBackend
+        b = ScreenBackend((0, 0, 100, 100))
+        mouse, kb = mock.Mock(), mock.Mock()
+        b._mouse, b._keyboard = mouse, kb
+        b.press_combo("mouse_left")
+        mouse.press.assert_called_once_with(Button.left)
+        mouse.release.assert_called_once_with(Button.left)
+        kb.press.assert_not_called()
+        mouse.reset_mock()
+        b.press_combo("ctrl+mouse_right")
+        kb.press.assert_called_once_with(Key.ctrl)
+        mouse.press.assert_called_once_with(Button.right)
+        kb.release.assert_called_once_with(Key.ctrl)
+        kb.reset_mock()
+        mouse.reset_mock()
+        b.press_combo("space")
+        kb.press.assert_called_once_with(Key.space)
+        mouse.press.assert_not_called()
+        with self.assertRaises(ValueError):
+            b.press_combo("mouse_banana")
+
     def test_config_merge(self):
         cfg = config.merge({"poll_ms": 50, "always_on_top": "yes", "default_confidence": 1,
                             "junk": 1})

@@ -111,7 +111,10 @@ the spot - add More > Hit the spot:
                   and may move each round; it's found on every look, even
                   while the marker is crossing it
      Fixed place  drag across the drawing of the bar to mark the spot
-4. Then press: the key, e.g. space (or press Record and hit it).
+4. Then press: a key (e.g. space) or a mouse button. Press Record, then
+   press the key or click the mouse button you want - left click included.
+   The cursor button next to Record lists the mouse buttons too. A click
+   step clicks wherever the mouse pointer is, so leave it over the game.
 5. Test shows where it sees the marker right now, drawn on the bar.
 
 How it times the press: it measures the marker's speed from the last few
