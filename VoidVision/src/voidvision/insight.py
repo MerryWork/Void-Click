@@ -21,7 +21,9 @@ LEVEL_STYLE = {
 
 def preview(image, max_w, max_h):
     """Scale a capture to fit a box; small captures grow with hard pixels."""
-    pic = image.convert("RGB")
+    from .cutout import on_checkerboard
+
+    pic = on_checkerboard(image) if image.mode == "RGBA" else image.convert("RGB")
     k = min(max_w / pic.width, max_h / pic.height)
     if k >= 2:
         k = int(k)

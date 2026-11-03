@@ -124,7 +124,12 @@ def circle(canvas, cx, cy, d, fill, bg=None, outline=None, width=1, tags=()):
 def thumbnail(image, size, bg="#1d222c", radius=5):
     """Fit `image` inside a size x size rounded tile (returns a PIL image)."""
     tile = Image.new("RGBA", (size, size), hex_to_rgb(bg) + (255,))
-    pic = image.convert("RGB").copy()
+    if image.mode == "RGBA":
+        from .cutout import on_checkerboard
+
+        pic = on_checkerboard(image, cell=3)
+    else:
+        pic = image.convert("RGB").copy()
     pic.thumbnail((size - 6, size - 6), Image.NEAREST if max(pic.size) < size // 2 else Image.LANCZOS)
     if max(pic.size) < size // 2:
         # Tiny captures (an icon, a digit) are enlarged with hard pixels so

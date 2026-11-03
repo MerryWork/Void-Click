@@ -37,6 +37,9 @@ def image_quality(image):
     rgb = matcher.as_rgb(image)
     h, w = rgb.shape[:2]
     gray = matcher.to_gray(rgb)
+    mask = matcher.mask_of(image)
+    if mask is not None:
+        return _cutout_quality(gray, mask)
     if min(w, h) < 8 or w * h < 120:
         return Verdict(WEAK, "Very small",
                        f"At {w}×{h} px it can match in many places. Capture a bit more "
@@ -58,6 +61,24 @@ def image_quality(image):
                        "Big captures are slower to find and break if any part changes. "
                        "Capture just the part you want to click.")
     return Verdict(GOOD, "Good image", "Clear detail and a sensible size - easy to find.")
+
+
+def _cutout_quality(gray, mask):
+    kept = int(mask.sum())
+    share = mask.mean()
+    if kept < 30 or share < 0.02:
+        return Verdict(WEAK, "Almost nothing kept",
+                       f"Only {kept} pixels ({share:.0%}) are left to compare, so it can match almost "
+                       "anywhere. Edit the cut-out and keep a wider colour range.")
+    if matcher._uses_agreement(gray, mask):
+        return Verdict(OK, "Cut-out \u2014 shape only",
+                       f"{share:.0%} of the image is kept, in just a few shades, so mainly its shape "
+                       "is compared - the background behind it is ignored. Set a Search area "
+                       "around it: shapes like this are searched at full detail, which is "
+                       "slow across a whole screen.")
+    return Verdict(GOOD, "Cut-out",
+                   f"{share:.0%} of the image is kept; the rest is ignored, so changes behind "
+                   "it don't matter.")
 
 
 def test_result(score, confidence, found, elapsed_ms=None):

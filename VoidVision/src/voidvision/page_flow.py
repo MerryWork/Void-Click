@@ -5,6 +5,7 @@ import tkinter as tk
 from PIL import Image, ImageTk
 
 from . import draw, explain, icons, model, theme
+from .cutout_dialog import open_cutout
 from .insight import ComparePanel, QualityLine, preview
 from . import widgets as w
 from .model import KINDS, Step
@@ -603,6 +604,11 @@ class Inspector(w.Card):
                  height=28, font=theme.font(9, "bold"), icon_size=14,
                  command=self.capture_template).pack(side="left")
         if t:
+            w.Button(btns, icon="scissors", variant="secondary", parent_bg=bg, height=28,
+                     icon_size=14, tooltip="Cut out the background (ignore what's behind it)",
+                     command=lambda: open_cutout(self.app, t,
+                                                 after=lambda: self.show(step))
+                     ).pack(side="left", padx=(6, 0))
             w.label(btns, f"{t.size[0]}×{t.size[1]}px", muted=True, size=9,
                     bg=bg).pack(side="left", padx=8)
             QualityLine(parent, t.image, bg=bg, wrap=290).pack(fill="x", pady=(0, 8))

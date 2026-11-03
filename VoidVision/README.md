@@ -70,6 +70,33 @@ what a number like 0.81 means.
   can see whether the step would now succeed without testing again.
 
 
+CUT-OUTS: IGNORING WHAT'S BEHIND IT
+
+A capture of a meter, a timing bar, a crosshair or a health bar drags along
+whatever was behind it - a character, the map, the sky. When that changes,
+the capture stops matching. Cut the background out:
+
+1. Images page (or the scissors button next to Capture in a step) >
+   Cut out background.
+2. Click the colour to look for - e.g. the white of a timing bar. Only
+   pixels of that colour (+/- Colour range) are kept; everything shown as a
+   grey checkerboard is ignored when matching. "Remove this colour" takes
+   a colour out instead, e.g. a marker that moves along the bar.
+3. Apply. The image's rating tells you what was kept.
+
+Cut-outs that keep just a few shades (a white bar and its ticks) are matched
+by shape: each kept spot must still show its own shade, and the spots
+around it must not - so a plain white wall can't pass for a white bar, and a
+marker sliding over part of the bar only costs the pixels it covers. These
+are searched at full detail, so give such steps a Search area around the bar
+(about 40 ms instead of around a second for a whole screen). On a white
+background a white bar genuinely can't be told apart.
+
+Importing a PNG with transparency also gives you a cut-out: transparent
+pixels are ignored. Edit cut-out / Undo bring every pixel back at any time -
+the original pixels are kept in the flow file.
+
+
 STEPS
 
 Vision
@@ -178,7 +205,9 @@ TESTS
 Or run every suite in the repository, Void Click included, from the root
 with `python run_tests.py` (see ../TESTING.md).
 
-Covers the plain-language image and test explanations, the matcher (exact, downscaled, brightness-shifted, colour-strict,
+Covers cut-outs (masks, shape matching through a moving marker, not
+mistaking a plain patch for the shape), the plain-language image and test
+explanations, the matcher (exact, downscaled, brightness-shifted, colour-strict,
 flat, multi-match, colour search), the flow file round trip, every runner
 rule (offsets, actions, Retina scale and desktop origin, search areas, the
 three failure policies, wait-appear/vanish, if-visible skipping, loops, stop,

@@ -109,6 +109,19 @@ def new_id():
     return uuid.uuid4().hex[:10]
 
 
+def normalize_image(image):
+    """RGBA when the image is a cut-out (has transparent pixels), else RGB."""
+    from .matcher import mask_of
+
+    if mask_of(image) is not None:
+        rgba = image.convert("RGBA")
+        # Snap alpha to fully kept / fully ignored, which is how matching sees it.
+        a = rgba.getchannel("A").point(lambda v: 255 if v >= 128 else 0)
+        rgba.putalpha(a)
+        return rgba
+    return image.convert("RGB")
+
+
 @dataclass
 class Template:
     id: str
@@ -119,9 +132,14 @@ class Template:
     def size(self):
         return self.image.size
 
+    @property
+    def is_cutout(self):
+        return self.image.mode == "RGBA"
+
     def to_dict(self):
         buf = io.BytesIO()
-        self.image.convert("RGB").save(buf, format="PNG", optimize=True)
+        # Cut-outs keep their transparency; everything else is stored as RGB.
+        normalize_image(self.image).save(buf, format="PNG", optimize=True)
         return {"id": self.id, "name": self.name,
                 "png": base64.b64encode(buf.getvalue()).decode("ascii")}
 
@@ -129,7 +147,7 @@ class Template:
     def from_dict(cls, d):
         image = Image.open(io.BytesIO(base64.b64decode(d["png"])))
         image.load()
-        return cls(str(d["id"]), str(d.get("name") or "Image"), image.convert("RGB"))
+        return cls(str(d["id"]), str(d.get("name") or "Image"), normalize_image(image))
 
 
 @dataclass
@@ -194,7 +212,7 @@ class Flow:
             while f"Image {n}" in existing:
                 n += 1
             name = f"Image {n}"
-        self.templates[tid] = Template(tid, name, image.convert("RGB"))
+        self.templates[tid] = Template(tid, name, normalize_image(image))
         return self.templates[tid]
 
     def remove_template(self, tid):

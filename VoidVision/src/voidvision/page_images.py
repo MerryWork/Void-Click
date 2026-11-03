@@ -5,8 +5,9 @@ from tkinter import filedialog
 
 from PIL import Image, ImageTk
 
-from . import draw, icons, theme
+from . import cutout, draw, icons, model, theme
 from . import widgets as w
+from .cutout_dialog import open_cutout
 from .insight import ComparePanel, QualityLine, preview
 
 TILE_W, TILE_H = 150, 150
@@ -42,6 +43,10 @@ class Tile(tk.Canvas):
                          font=theme.font(10, "bold"), width=TILE_W - 20)
         uses = self.page.app.flow.usage(t.id)
         meta = f"{t.size[0]}×{t.size[1]}  ·  " + (f"used {uses}×" if uses else "unused")
+        if t.is_cutout:
+            # Badge on the thumbnail, in words, so it isn't lost in the meta line.
+            draw.rrect(self, 14, 14, 58, 18, 9, theme.GREEN_DIM, None, theme.BG_FIELD)
+            self.create_text(43, 23, text="CUT-OUT", fill=theme.GREEN, font=theme.font(7, "bold"))
         self.create_text(12, 136, text=meta, anchor="w", fill=theme.FG_MUTED, font=theme.font(8))
 
 
@@ -167,8 +172,25 @@ class ImagesPage(tk.Frame):
                  command=lambda: self.app.test_template(t)).pack(side="left")
         w.Button(btns, text="Recapture", icon="crosshair", variant="ghost", parent_bg=bg,
                  command=lambda: self._recapture(t)).pack(side="left", padx=6)
+        cut = tk.Frame(b, bg=bg)
+        cut.pack(fill="x", pady=(8, 0))
+        w.Button(cut, text="Edit cut-out" if t.is_cutout else "Cut out background",
+                 icon="scissors", variant="secondary", parent_bg=bg,
+                 tooltip="Ignore the parts behind it, like a character behind a bar",
+                 command=lambda: open_cutout(self.app, t)).pack(side="left")
+        if t.is_cutout:
+            w.Button(cut, text="Undo", variant="ghost", parent_bg=bg,
+                     tooltip="Compare every pixel again",
+                     command=lambda: self._undo_cutout(t)).pack(side="left", padx=6)
         w.Button(b, text="Delete image", icon="trash", variant="danger", parent_bg=bg,
                  command=lambda: self._delete(t)).pack(anchor="w", pady=(10, 0))
+
+    def _undo_cutout(self, t):
+        t.image = cutout.clear(t.image)
+        self.app.test_results.pop("tpl:" + t.id, None)
+        self.app.mark_dirty()
+        self.app.on_library_changed()
+        self.app.toast("Cut-out removed - every pixel counts again", "info")
 
     def on_test_result(self, key):
         if self.selected is not None and key == "tpl:" + self.selected.id:
@@ -185,7 +207,7 @@ class ImagesPage(tk.Frame):
     def _recapture(self, t):
         def done(image):
             if image is not None:
-                t.image = image.convert("RGB")
+                t.image = model.normalize_image(image)
                 self.app.test_results.pop("tpl:" + t.id, None)
                 self.app.mark_dirty()
                 self.app.on_library_changed()

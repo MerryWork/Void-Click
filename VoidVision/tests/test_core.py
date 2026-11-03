@@ -552,6 +552,118 @@ class ExplainTests(unittest.TestCase):
         self.assertEqual(p.closest.tobytes(), claim.tobytes())
 
 
+def timing_bar(behind=(230, 200, 40)):
+    """A white tick bar with a red marker, drawn over something coloured -
+    the shape of a game's timing meter."""
+    img = Image.new("RGB", (200, 40), (209, 216, 229))
+    d = ImageDraw.Draw(img)
+    d.rectangle([80, 5, 120, 38], fill=behind)            # a character behind the bar
+    d.rectangle([10, 18, 190, 21], fill=(255, 255, 255))
+    for x in range(10, 191, 20):
+        d.rectangle([x, 12, x + 1, 27], fill=(255, 255, 255))
+    d.rectangle([150, 8, 154, 31], fill=(230, 20, 20))      # moving marker
+    return img
+
+
+class CutoutTests(unittest.TestCase):
+    def test_keep_colour_makes_a_mask(self):
+        from voidvision import cutout
+        bar = timing_bar()
+        cut = cutout.keep_colors(bar, [(255, 255, 255)], 30)
+        self.assertTrue(cutout.is_cutout(cut))
+        mask = matcher.mask_of(cut)
+        self.assertTrue(mask[19, 50])           # the white bar is kept
+        self.assertFalse(mask[8, 100])          # the character behind it is not
+        self.assertFalse(mask[20, 152])         # nor the red marker
+        self.assertLess(cutout.kept_fraction(cut), 0.25)
+        self.assertFalse(cutout.is_cutout(cutout.clear(cut)))
+
+    def test_build_keep_then_remove(self):
+        from voidvision import cutout
+        bar = timing_bar()
+        everything_but_red = cutout.build(bar, remove=[(230, 20, 20)], tolerance=20)
+        m = matcher.mask_of(everything_but_red)
+        self.assertFalse(m[20, 152])
+        self.assertTrue(m[19, 50])
+        self.assertFalse(cutout.is_cutout(cutout.build(bar)))   # nothing picked = no cut-out
+
+    def test_cutout_matches_on_a_different_background(self):
+        from voidvision import cutout
+        cut = cutout.keep_colors(timing_bar(), [(255, 255, 255)], 30)
+        screen = desktop(800, 500)
+        # The same bar, but the character behind it changed colour and the
+        # marker moved: a plain capture no longer matches, the cut-out does.
+        moved = timing_bar(behind=(40, 90, 200))
+        d = ImageDraw.Draw(moved)
+        d.rectangle([150, 8, 154, 31], fill=(209, 216, 229))
+        d.rectangle([30, 8, 34, 31], fill=(230, 20, 20))
+        screen.paste(moved, (420, 300))
+        m = matcher.find(screen, cut, 0.9)
+        self.assertIsNotNone(m)
+        self.assertEqual((m.x, m.y), (420, 300))
+        plain = matcher.best(screen, timing_bar())
+        self.assertLess(plain.score, m.score)
+
+    def test_cutout_is_not_fooled_by_a_plain_patch_of_its_colour(self):
+        from voidvision import cutout
+        cut = cutout.keep_colors(timing_bar(), [(255, 255, 255)], 30)
+        screen = Image.new("RGB", (700, 400), (120, 170, 220))
+        ImageDraw.Draw(screen).rectangle([0, 0, 320, 220], fill=(255, 255, 255))
+        best = matcher.best(screen, cut)
+        self.assertLess(best.score, 0.85)        # a white wall is not a tick bar
+        screen.paste(timing_bar(behind=(90, 90, 90)), (400, 300))
+        m = matcher.find(screen, cut, 0.85)
+        self.assertEqual((m.x, m.y), (400, 300))
+
+    def test_cutout_found_on_many_backgrounds_at_full_size(self):
+        # Thin shapes vanish when downscaled; big screens must still find them.
+        from voidvision import cutout
+        cut = cutout.keep_colors(timing_bar(), [(255, 255, 255)], 30)
+        mask = matcher.mask_of(cut)
+        bar = np.asarray(timing_bar())
+        for bg in ((120, 170, 220), (200, 200, 200), (235, 238, 245), (30, 30, 40)):
+            arr = np.zeros((700, 1000, 3), np.uint8)
+            arr[:] = bg
+            spot = arr[500:540, 600:800]
+            spot[mask] = bar[mask]
+            spot[8:31, 40:45] = (230, 20, 20)             # marker over the bar
+            m = matcher.find(arr, cut, 0.85)
+            self.assertIsNotNone(m, bg)
+            self.assertEqual((m.x, m.y), (600, 500), bg)
+
+    def test_masked_ncc_with_detail(self):
+        # A cut-out that keeps varied pixels uses true masked NCC.
+        hay = noise(300, 400, 5)
+        t = hay[100:150, 200:280].copy()
+        rgba = np.dstack([t, np.full(t.shape[:2], 255, np.uint8)])
+        rgba[:20, :30, 3] = 0                                 # ignore a corner
+        hay2 = hay.copy()
+        hay2[100:120, 200:230] = 0                            # which changed on screen
+        m = matcher.find(hay2, Image.fromarray(rgba, "RGBA"), 0.95)
+        self.assertEqual((m.x, m.y), (200, 100))
+
+    def test_cutout_survives_save_and_load(self):
+        from voidvision import cutout
+        flow = Flow()
+        t = flow.add_template(cutout.keep_colors(timing_bar(), [(255, 255, 255)], 30))
+        self.assertTrue(t.is_cutout)
+        back = Flow.from_dict(flow.to_dict())
+        bt = back.templates[t.id]
+        self.assertTrue(bt.is_cutout)
+        np.testing.assert_array_equal(matcher.mask_of(bt.image), matcher.mask_of(t.image))
+        plain = flow.add_template(timing_bar())
+        self.assertFalse(plain.is_cutout)
+
+    def test_quality_explains_cutouts(self):
+        from voidvision import cutout, explain
+        cut = cutout.keep_colors(timing_bar(), [(255, 255, 255)], 30)
+        v = explain.image_quality(cut)
+        self.assertEqual(v.title, "Cut-out — shape only")
+        self.assertIn("ignored", v.detail)
+        tiny = cutout.keep_colors(timing_bar(), [(230, 20, 20)], 5)
+        self.assertEqual(explain.image_quality(tiny).level, explain.WEAK)
+
+
 class ScreenBackendTests(unittest.TestCase):
     def test_region_crop_keeps_retina_scale(self):
         from unittest import mock
